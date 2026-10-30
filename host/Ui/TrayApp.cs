@@ -63,8 +63,11 @@ namespace CapriHost.Ui
 
             if (!server.Start())
             {
-                MessageBox.Show("Cổng " + settings.Port + " đang bị chương trình khác dùng nên Capri không nhận được kết nối từ điện thoại.\nĐóng chương trình đ\u2026[...]
-                    "Capri Host", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(
+                    "Cổng " + settings.Port + " đang bị chương trình khác dùng nên Capri không nhận được kết nối từ điện thoại.\nĐóng chương trình để khởi động lại và thử lại.",
+                    "Capri Host",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
             }
             discovery.Start();
 
