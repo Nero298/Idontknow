@@ -63,7 +63,7 @@ namespace CapriHost.Ui
 
             if (!server.Start())
             {
-                MessageBox.Show("Cổng " + settings.Port + " đang bị chương trình khác dùng nên Capri không nhận được kết nối từ điện thoại.\nĐóng chương trình đó hoặc sửa \"port\" trong settings.json.",
+                MessageBox.Show("Cổng " + settings.Port + " đang bị chương trình khác dùng nên Capri không nhận được kết nối từ điện thoại.\nĐóng chương trình đ\u2026[...]
                     "Capri Host", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
             discovery.Start();
@@ -181,8 +181,8 @@ namespace CapriHost.Ui
         private void OnUi(Action action)
         {
             try { sync.BeginInvoke(action); }
-            catch (InvalidOperationException) { }
             catch (ObjectDisposedException) { }
+            catch (InvalidOperationException) { }
         }
 
         // Hỏi xác nhận bằng hộp thoại trên PC (gọi từ luồng nền nên phải Invoke).
