@@ -1,0 +1,55 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Capri Host - bản dành cho Windows 7 SP1 trở lên.
+    * .NET Framework 4.6.1, C# 5 (LangVersion=5 ép trình biên dịch từ chối cú pháp C# 6+)
+    * WinForms, không WPF, không WinRT, không DLL native, không mô hình giọng nói (mọi thứ là chữ).
+    * Reference assemblies lấy từ NuGet nên build được cả khi máy build không cài .NET 4.6.1 Targeting Pack.
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net461</TargetFramework>
+    <LangVersion>5</LangVersion>
+    <AssemblyName>CapriHost</AssemblyName>
+    <RootNamespace>CapriHost</RootNamespace>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\chip.ico</ApplicationIcon>
+    <Version>1.0.0</Version>
+    <Product>Capri Host</Product>
+    <Description>Capri desktop companion - host for the Capri Remote Android app</Description>
+    <Deterministic>true</Deterministic>
+    <DebugType>none</DebugType>
+    <Optimize>true</Optimize>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <AutoGenerateBindingRedirects>false</AutoGenerateBindingRedirects>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Security" />
+    <Reference Include="System.Web.Extensions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\sprites\*.png">
+      <LogicalName>Capri.Sprite.%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Assets\fonts\ShareTechMono-Regular.ttf">
+      <LogicalName>Capri.Font.Mono.ttf</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Assets\chip.ico">
+      <LogicalName>Capri.Chip.ico</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+</Project>

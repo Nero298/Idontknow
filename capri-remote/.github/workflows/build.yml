@@ -1,0 +1,94 @@
+name: Build Capri
+
+# Build cả hai ứng dụng trên GitHub Actions:
+#   - Capri Host (Windows 7+, .NET Framework 4.6.1, C# 5)  -> CapriHost-win7.zip
+#   - Capri Remote (Android 13+, Kotlin)                     -> capri-remote.apk
+# Đẩy tag dạng v1.0.0 để tự tạo bản phát hành (Release) kèm cả hai file.
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  host:
+    name: Capri Host (Windows 7)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # net461 + LangVersion=5: trình biên dịch sẽ báo lỗi nếu lỡ dùng cú pháp C# 6 trở lên.
+      # Reference assemblies lấy từ NuGet nên không cần cài .NET 4.6.1 Targeting Pack trên runner.
+      - name: Build
+        run: dotnet build host/CapriHost.csproj -c Release -o out/host
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item out/host/CapriHost.exe dist/
+          if (Test-Path out/host/CapriHost.exe.config) { Copy-Item out/host/CapriHost.exe.config dist/ }
+          Copy-Item LICENSE.md, NOTICE.md, README.md dist/
+          Compress-Archive -Path dist/* -DestinationPath CapriHost-win7.zip -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CapriHost-win7
+          path: CapriHost-win7.zip
+
+  android:
+    name: Capri Remote (Android 13+)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Android SDK (licenses + platform 36)
+        run: |
+          set +o pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0" || true
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Build APK
+        run: gradle -p android :app:assembleRelease --stacktrace
+
+      - name: Rename APK
+        run: cp android/app/build/outputs/apk/release/app-release.apk capri-remote.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: capri-remote-apk
+          path: capri-remote.apk
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [host, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/CapriHost-win7.zip
+            artifacts/capri-remote.apk
