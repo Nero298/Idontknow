@@ -12,8 +12,8 @@ android {
         applicationId = "app.capri.remote"
         minSdk = 33          // Android 13 trở lên
         targetSdk = 36       // Android 16 (bản ổn định mới nhất lúc viết)
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
     }
 
     buildTypes {

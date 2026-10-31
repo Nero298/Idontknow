@@ -28,6 +28,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.TextButton
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
@@ -83,8 +87,15 @@ fun ThinkingDots() {
 }
 
 /** Một tin nhắn: của người dùng là bong bóng xám nhạt bên phải, của Capri là chữ phẳng kèm avatar (như Claude). */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun MessageItem(message: ChatMessage) {
+fun MessageItem(
+    message: ChatMessage,
+    onStop: (String) -> Unit = {},
+    onResend: (String) -> Unit = {},
+    onEdit: (String) -> Unit = {},
+    onViewLog: (String) -> Unit = {}
+) {
     if (message.role == "user") {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             Surface(
@@ -112,15 +123,40 @@ fun MessageItem(message: ChatMessage) {
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             if (message.pending) {
-                ThinkingDots()
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    ThinkingDots()
+                    Spacer(Modifier.width(8.dp))
+                    TextButton(onClick = { onStop(message.id) }) {
+                        Icon(Icons.Filled.Stop, null, Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Dừng")
+                    }
+                }
             } else {
                 if (message.text.isNotEmpty()) {
                     SelectionContainer {
                         Text(
                             message.text,
                             style = MaterialTheme.typography.bodyLarge,
-                            color = if (message.error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onBackground
+                            color = if (message.error) MaterialTheme.colorScheme.error
+                            else if (message.cancelled) MaterialTheme.colorScheme.onSurfaceVariant
+                            else MaterialTheme.colorScheme.onBackground
                         )
+                    }
+                }
+                if (message.info.isNotEmpty()) {
+                    Text(
+                        message.info,
+                        modifier = Modifier.padding(top = 4.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (message.error || message.cancelled) {
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(onClick = { onResend(message.id) }) { Text("Gửi lại") }
+                        TextButton(onClick = { onEdit(message.id) }) { Text("Sửa rồi gửi lại") }
+                        if (message.error) TextButton(onClick = { onViewLog(message.id) }) { Text("Xem log") }
                     }
                 }
                 for (note in message.notes) {
@@ -166,7 +202,9 @@ fun Composer(
     onMic: () -> Unit,
     onStopAndSend: () -> Unit,
     onCancelRecording: () -> Unit,
-    onPlus: () -> Unit
+    onPlus: () -> Unit,
+    busy: Boolean = false,
+    onStopAll: () -> Unit = {}
 ) {
     Surface(
         shape = RoundedCornerShape(28.dp),
@@ -216,6 +254,13 @@ fun Composer(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = onPlus) { Icon(Icons.Outlined.Add, "Hành động nhanh", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                     Spacer(Modifier.weight(1f))
+                    if (busy) {
+                        FilledIconButton(
+                            onClick = onStopAll,
+                            colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.error)
+                        ) { Icon(Icons.Filled.Stop, "Dừng") }
+                        Spacer(Modifier.width(6.dp))
+                    }
                     if (text.isBlank()) {
                         IconButton(onClick = onMic) { Icon(Icons.Outlined.Mic, "Nói với Capri", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                     } else {

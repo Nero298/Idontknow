@@ -39,6 +39,9 @@ import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.BugReport
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.DrawerValue
@@ -112,8 +115,14 @@ fun ChatScreen(vm: AppViewModel, state: UiState) {
     val conversation = state.conversations.firstOrNull { it.id == state.currentId }
     val messages = conversation?.messages ?: emptyList()
     val online = state.conn is ConnState.Online
+    val busy = messages.any { it.pending }
 
     var input by rememberSaveable { mutableStateOf("") }
+    // "Sửa rồi gửi lại": đưa nội dung cũ vào ô nhập.
+    LaunchedEffect(state.draft) {
+        val d = state.draft
+        if (d != null) { input = d; vm.consumeDraft() }
+    }
     var sheet by remember { mutableStateOf(false) }
     var dialog by remember { mutableStateOf<QuickKind?>(null) }
     var seconds by remember { mutableIntStateOf(0) }
@@ -188,6 +197,15 @@ fun ChatScreen(vm: AppViewModel, state: UiState) {
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 NavigationDrawerItem(
+                    label = { Text("Nhật ký lỗi") },
+                    icon = {
+                        BadgedBox(badge = { if (state.logUnread) Badge() }) { Icon(Icons.Outlined.BugReport, null) }
+                    },
+                    selected = false,
+                    onClick = { vm.openLog(); scope.launch { drawerState.close() } },
+                    modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
+                )
+                NavigationDrawerItem(
                     label = { Text("Cài đặt") },
                     icon = { Icon(Icons.Outlined.Settings, null) },
                     selected = false,
@@ -208,7 +226,11 @@ fun ChatScreen(vm: AppViewModel, state: UiState) {
                             StatusDot(online)
                         }
                     },
-                    navigationIcon = { IconButton(onClick = { scope.launch { drawerState.open() } }) { Icon(Icons.Outlined.Menu, "Menu") } },
+                    navigationIcon = {
+                        IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                            BadgedBox(badge = { if (state.logUnread) Badge() }) { Icon(Icons.Outlined.Menu, "Menu") }
+                        }
+                    },
                     actions = { IconButton(onClick = { vm.newChat() }) { Icon(Icons.Outlined.Edit, "Cuộc trò chuyện mới") } },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
                 )
@@ -227,7 +249,15 @@ fun ChatScreen(vm: AppViewModel, state: UiState) {
                             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                             verticalArrangement = Arrangement.spacedBy(20.dp)
                         ) {
-                            items(messages, key = { it.id }) { MessageItem(it) }
+                            items(messages, key = { it.id }) {
+                                MessageItem(
+                                    it,
+                                    onStop = { id -> vm.stop(id) },
+                                    onResend = { id -> vm.resend(id) },
+                                    onEdit = { id -> vm.editAndResend(id) },
+                                    onViewLog = { id -> vm.openLog(id) }
+                                )
+                            }
                         }
                     }
                 }
@@ -254,7 +284,9 @@ fun ChatScreen(vm: AppViewModel, state: UiState) {
                     onMic = { tapMic() },
                     onStopAndSend = { vm.stopAndSend() },
                     onCancelRecording = { vm.cancelRecording() },
-                    onPlus = { sheet = true }
+                    onPlus = { sheet = true },
+                    busy = busy,
+                    onStopAll = { vm.stopAll() }
                 )
             }
         }
@@ -298,7 +330,7 @@ fun ChatScreen(vm: AppViewModel, state: UiState) {
         QuickKind.Youtube -> TextInputDialog(
             title = "Bật nhạc trên YouTube", hint = "Tên bài hát, ví dụ: Love Me Not", confirm = "Phát",
             onDismiss = { dialog = null },
-            onConfirm = { text -> dialog = null; vm.quick("Bật nhạc: $text", "play_youtube", JSONObject().put("query", text).put("browser", "chrome")) }
+            onConfirm = { text -> dialog = null; vm.quick("Bật nhạc: $text", "play_youtube", JSONObject().put("query", text)) }
         )
         QuickKind.App -> AppDialog(
             onDismiss = { dialog = null },

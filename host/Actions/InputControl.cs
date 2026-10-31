@@ -8,6 +8,9 @@ namespace CapriHost.Actions
     // Điều khiển chuột/bàn phím cơ bản qua user32 (keybd_event, mouse_event, SendInput) - có từ Windows 2000.
     internal static class InputControl
     {
+        // Lệnh đang chạy trên luồng công cụ này: gõ chữ dài sẽ dừng sớm khi bị Dừng/hết giờ.
+        [ThreadStatic] internal static CommandContext Stop;
+
         private static readonly Dictionary<string, byte> Keys = BuildKeys();
 
         private static Dictionary<string, byte> BuildKeys()
@@ -76,6 +79,7 @@ namespace CapriHost.Actions
         {
             foreach (char c in text)
             {
+                if (Stop != null && Stop.Cancelled) return;
                 if (c == '\r') continue;
                 if (c == '\n') { Tap(0x0D); continue; }
                 Native.TypeChar(c);

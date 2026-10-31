@@ -8,6 +8,8 @@ namespace CapriHost.Ai
     {
         internal readonly int Status;
         internal readonly string Body;
+        internal int RetryAfterSec;      // từ header Retry-After (0 nếu không có)
+        internal bool Soft;              // true: nhà cung cấp chỉ "không xử lý được lệnh này" (không phải hỏng) -> thử nhà tiếp theo, không nghỉ
 
         internal AiException(string message, int status, string body) : base(message)
         {
@@ -107,7 +109,7 @@ namespace CapriHost.Ai
         string Name { get; }
         string Label { get; }
         bool Configured { get; }
-        AiTurn Complete(string system, List<ChatMsg> messages, List<ToolSpec> tools);
+        AiTurn Complete(string system, List<ChatMsg> messages, List<ToolSpec> tools, CapriHost.Core.CommandContext cmd);
         List<string> ListModels(string keyOverride);
     }
 }

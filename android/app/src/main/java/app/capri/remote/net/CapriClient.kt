@@ -32,7 +32,12 @@ sealed interface ConnState {
  * Kết nối TCP tới Capri Host: bắt tay + mã hóa, ping mỗi 10 giây, tự kết nối lại (chờ 1s, 2s, 4s... tối đa 15s).
  * Điện thoại chỉ là bộ điều khiển: mọi xử lý AI nằm trên Host.
  */
-class CapriClient(private val prefs: Prefs, private val scope: CoroutineScope) {
+class CapriClient(
+    private val prefs: Prefs,
+    private val scope: CoroutineScope,
+    /** Ghi nhật ký phía điện thoại: (mức, nguồn, nội dung). Không bao giờ nuốt lỗi kết nối âm thầm. */
+    private val onLog: (String, String, String) -> Unit = { _, _, _ -> }
+) {
     private val _state = MutableStateFlow<ConnState>(ConnState.Idle)
     val state: StateFlow<ConnState> = _state
 
@@ -71,9 +76,20 @@ class CapriClient(private val prefs: Prefs, private val scope: CoroutineScope) {
     fun send(message: JSONObject): Boolean {
         val s = socket ?: return false
         scope.launch(Dispatchers.IO) {
-            try { s.send(message.toString()) } catch (_: IOException) { s.close() } catch (_: Exception) { s.close() }
+            try { s.send(message.toString()) } catch (e: IOException) {
+                onLog("WARN", "Mạng", "Gửi gói '${message.optString("t")}' thất bại: ${e.message}")
+                s.close()
+            }
         }
         return true
+    }
+
+    @Volatile private var lastLogged = ""
+
+    private fun logOnce(level: String, text: String) {
+        if (text == lastLogged) return
+        lastLogged = text
+        onLog(level, "Mạng", text)
     }
 
     private suspend fun loop() {
@@ -91,6 +107,7 @@ class CapriClient(private val prefs: Prefs, private val scope: CoroutineScope) {
                 wanted = false
                 return
             } catch (e: HostMessage) {
+                logOnce("ERROR", "Host từ chối kết nối: ${e.message}")
                 _state.value = ConnState.Failed(e.message ?: "Host từ chối kết nối")
                 wanted = false
                 return
@@ -108,15 +125,17 @@ class CapriClient(private val prefs: Prefs, private val scope: CoroutineScope) {
                     return
                 }
             } catch (e: IOException) {
-                // mất mạng / Host tắt: thử lại bên dưới
+                logOnce("WARN", "Mất kết nối tới Host: ${e.javaClass.simpleName} ${e.message ?: ""}".trim())
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
-                // lỗi bất ngờ: thử lại
+                logOnce("ERROR", "Lỗi bất ngờ khi kết nối: ${e.javaClass.simpleName} ${e.message ?: ""}".trim() + "\n" + android.util.Log.getStackTraceString(e).take(1200))
             }
             socket = null
             if (!wanted) break
             _state.value = ConnState.Offline
             delay(backoff)
-            backoff = minOf(backoff * 2, 15000L)
+            backoff = minOf(backoff * 2, Timeouts.RECONNECT_MAX_MS)
         }
     }
 
@@ -132,16 +151,16 @@ class CapriClient(private val prefs: Prefs, private val scope: CoroutineScope) {
         var secure: SecureSocket? = null
         var heartbeat: Job? = null
         try {
-            raw.connect(InetSocketAddress(host, prefs.port), 5000)
+            raw.connect(InetSocketAddress(host, prefs.port), Timeouts.CONNECT_MS)
             raw.tcpNoDelay = true
             raw.keepAlive = true
-            raw.soTimeout = 12000
+            raw.soTimeout = Timeouts.HANDSHAKE_READ_MS
             secure = SecureSocket(raw)
 
             val code = pairingCode
             val clientNonce = Crypto.random(16)
             secure.sendPlain(JSONObject()
-                .put("t", "hello").put("v", 1)
+                .put("t", "hello").put("v", 2)
                 .put("id", prefs.deviceId)
                 .put("name", Build.MODEL ?: "Android")
                 .put("cn", Base64.encodeToString(clientNonce, Base64.NO_WRAP))
@@ -178,14 +197,16 @@ class CapriClient(private val prefs: Prefs, private val scope: CoroutineScope) {
                     }
                     "ready" -> {
                         ready = true
-                        raw.soTimeout = 30000       // Host trả pong mỗi 10 giây nên 30 giây im lặng là mất kết nối
+                        raw.soTimeout = Timeouts.IDLE_READ_MS       // Host trả pong mỗi 10 giây nên 30 giây im lặng là mất kết nối
+                        lastLogged = ""
+                        onLog("INFO", "Mạng", "Đã kết nối với Host ${message.optString("host", host)} (bản ${message.optString("version", "?")}, giao thức v${message.optInt("v", 1)})")
                         socket = secure
                         _state.value = ConnState.Online(message.optString("host", host))
                         val s = secure
                         heartbeat = scope.launch(Dispatchers.IO) {
                             while (isActive) {
-                                delay(10000)
-                                try { s.send("{\"t\":\"ping\"}") } catch (_: Exception) { s.close(); break }
+                                delay(Timeouts.HEARTBEAT_MS)
+                                try { s.send("{\"t\":\"ping\"}") } catch (e: IOException) { onLog("WARN", "Mạng", "Ping thất bại: ${e.message}"); s.close(); break }
                             }
                         }
                         _events.tryEmit(message)
@@ -196,7 +217,7 @@ class CapriClient(private val prefs: Prefs, private val scope: CoroutineScope) {
         } finally {
             heartbeat?.cancel()
             secure?.close()
-            try { raw.close() } catch (_: IOException) { }
+            try { raw.close() } catch (e: IOException) { onLog("INFO", "Mạng", "Đóng socket: ${e.message}") }
             socket = null
         }
     }

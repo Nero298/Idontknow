@@ -8,7 +8,7 @@ namespace CapriHost.Actions
     // Dọn dẹp an toàn: chỉ xoá trong thư mục %TEMP% của người dùng và đổ thùng rác.
     internal static class Cleaner
     {
-        internal static ToolOutcome Run(string what)
+        internal static ToolOutcome Run(string what, CommandContext cmd)
         {
             bool temp = what == "temp" || what == "all";
             bool bin = what == "recycle_bin" || what == "all";
@@ -23,7 +23,7 @@ namespace CapriHost.Actions
                 if (!(string.Equals(leaf, "Temp", StringComparison.OrdinalIgnoreCase) || string.Equals(leaf, "Tmp", StringComparison.OrdinalIgnoreCase)))
                     return ToolOutcome.Fail("Thư mục tạm của bạn (" + dir + ") không có tên Temp nên mình không dám xoá.");
                 long bytes = 0; int files = 0, skipped = 0;
-                Sweep(dir, DateTime.Now.AddMinutes(-30), 0, ref bytes, ref files, ref skipped);
+                Sweep(dir, DateTime.Now.AddMinutes(-30), 0, cmd, ref bytes, ref files, ref skipped);
                 report += "Đã xoá " + files + " file tạm (" + Size(bytes) + "), bỏ qua " + skipped + " file đang dùng hoặc mới tạo. ";
             }
             if (bin)
@@ -37,9 +37,10 @@ namespace CapriHost.Actions
             return ToolOutcome.Success(report.Trim());
         }
 
-        private static void Sweep(string dir, DateTime cutoff, int depth, ref long bytes, ref int files, ref int skipped)
+        private static void Sweep(string dir, DateTime cutoff, int depth, CommandContext cmd, ref long bytes, ref int files, ref int skipped)
         {
             if (depth > 12) return;
+            if (cmd != null && cmd.Cancelled) return;
             string[] list;
             try { list = Directory.GetFiles(dir); }
             catch (IOException) { return; }
@@ -50,6 +51,7 @@ namespace CapriHost.Actions
                 {
                     FileInfo info = new FileInfo(path);
                     if (info.LastWriteTime > cutoff) { skipped++; continue; }
+                    if (cmd != null && cmd.Cancelled) return;
                     long length = info.Length;
                     info.Attributes = FileAttributes.Normal;
                     info.Delete();
@@ -68,11 +70,11 @@ namespace CapriHost.Actions
                 try
                 {
                     if ((File.GetAttributes(sub) & FileAttributes.ReparsePoint) != 0) continue;   // không đi theo junction/symlink
-                    Sweep(sub, cutoff, depth + 1, ref bytes, ref files, ref skipped);
+                    Sweep(sub, cutoff, depth + 1, cmd, ref bytes, ref files, ref skipped);
                     Directory.Delete(sub, false);          // chỉ xoá nếu đã rỗng
                 }
-                catch (IOException) { }
-                catch (UnauthorizedAccessException) { }
+                catch (IOException) { /* thư mục chưa rỗng hoặc đang dùng: bỏ qua là đúng */ }
+                catch (UnauthorizedAccessException) { /* không có quyền: bỏ qua là đúng */ }
             }
         }
 

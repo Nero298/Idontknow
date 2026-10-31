@@ -17,6 +17,7 @@ import app.capri.remote.ui.AppViewModel
 import app.capri.remote.ui.CapriTheme
 import app.capri.remote.ui.ChatScreen
 import app.capri.remote.ui.ConnectScreen
+import app.capri.remote.ui.LogScreen
 import app.capri.remote.ui.Screen
 import app.capri.remote.ui.SettingsScreen
 
@@ -43,6 +44,7 @@ class MainActivity : ComponentActivity() {
                         Screen.Chat -> ChatScreen(vm, state)
                         Screen.Connect -> ConnectScreen(vm, state)
                         Screen.Settings -> SettingsScreen(vm, state)
+                        Screen.Log -> LogScreen(vm, state)
                     }
                 }
             }

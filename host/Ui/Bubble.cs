@@ -65,7 +65,9 @@ namespace CapriHost.Ui
                 }
                 if (fonts != null && fonts.Families.Length > 0) return new Font(fonts.Families[0], 11f, FontStyle.Regular, GraphicsUnit.Point);
             }
-            catch (Exception) { }
+            catch (ArgumentException error) { Core.Log.Warn("Giao diện", "Không nạp được phông nhúng, dùng Consolas: " + error.Message, null); }
+            catch (ExternalException error) { Core.Log.Warn("Giao diện", "Không nạp được phông nhúng, dùng Consolas: " + error.Message, null); }
+            catch (IOException error) { Core.Log.Warn("Giao diện", "Không nạp được phông nhúng, dùng Consolas: " + error.Message, null); }
             return new Font("Consolas", 10.5f);
         }
 
@@ -111,7 +113,8 @@ namespace CapriHost.Ui
         {
             e.Graphics.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
             using (Pen border = new Pen(Color.FromArgb(255, 42, 109), 2f))
-                e.Graphics.DrawPath(border, Rounded(new Rectangle(1, 1, Width - 3, Height - 3), 10));
+            using (GraphicsPath outline = Rounded(new Rectangle(1, 1, Width - 3, Height - 3), 10))
+                e.Graphics.DrawPath(border, outline);
             using (Brush ink = new SolidBrush(Color.FromArgb(5, 217, 232)))
                 e.Graphics.DrawString(text, font, ink, new RectangleF(13, 10, Width - 20, Height - 14));
         }

@@ -45,6 +45,12 @@ jobs:
           name: CapriHost-win7
           path: CapriHost-win7.zip
 
+      # File exe chạy thẳng, không cần giải nén.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CapriHost-exe
+          path: dist/CapriHost.exe
+
   android:
     name: Capri Remote (Android 13+)
     runs-on: ubuntu-latest

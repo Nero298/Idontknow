@@ -88,7 +88,7 @@ namespace CapriHost.Actions
             {
                 case "chrome": return new[] { "chrome" };
                 case "firefox": return new[] { "firefox" };
-                case "edge": return new[] { "msedge", "iexplore" };
+                case "edge": return new[] { "msedge" };
                 case "discord": return new[] { "Discord" };
                 case "spotify": return new[] { "Spotify" };
                 case "notepad": return new[] { "notepad" };
@@ -119,6 +119,14 @@ namespace CapriHost.Actions
                 if (eq <= 0) continue;
                 if (Canonical(line.Substring(0, eq)) != name) continue;
                 if (TryStart(line.Substring(eq + 1).Trim(), extra)) return ToolOutcome.Success("Đã mở " + rawName + ".");
+            }
+
+            // 2a) Trình duyệt: dùng BrowserLauncher (tìm qua App Paths, không bao giờ rơi âm thầm về Internet Explorer).
+            if (name == "chrome" || name == "firefox" || name == "edge")
+            {
+                ToolOutcome browser = BrowserLauncher.LaunchApp(name, extra);
+                if (browser.Ok) return ToolOutcome.Success("Đã mở " + rawName + ".");
+                return browser;
             }
 
             // 2) Ứng dụng có sẵn trong bảng.
@@ -193,8 +201,8 @@ namespace CapriHost.Actions
                     }
                     if (match) targets.Add(p); else p.Dispose();
                 }
-                catch (InvalidOperationException) { }
-                catch (Win32Exception) { }
+                catch (InvalidOperationException) { /* tiến trình vừa thoát: bỏ qua */ }
+                catch (Win32Exception) { /* không đọc được tiến trình hệ thống: bỏ qua */ }
             }
             if (targets.Count == 0) return ToolOutcome.Fail("Không thấy '" + rawName + "' đang chạy.");
 
@@ -238,8 +246,8 @@ namespace CapriHost.Actions
                     if (p.MainWindowHandle != IntPtr.Zero && p.MainWindowTitle.Length > 0 && !IsCritical(p.ProcessName))
                         lines.Add(p.MainWindowTitle + " (" + p.ProcessName + ")");
                 }
-                catch (InvalidOperationException) { }
-                catch (Win32Exception) { }
+                catch (InvalidOperationException) { /* tiến trình vừa thoát */ }
+                catch (Win32Exception) { /* không đọc được: bỏ qua */ }
                 finally { p.Dispose(); }
             }
             if (lines.Count == 0) return "Không có cửa sổ nào đang mở.";
@@ -260,8 +268,8 @@ namespace CapriHost.Actions
                 Native.GetWindowThreadProcessId(hwnd, out pid);
                 using (Process p = Process.GetProcessById((int)pid)) proc = p.ProcessName;
             }
-            catch (ArgumentException) { }
-            catch (InvalidOperationException) { }
+            catch (ArgumentException) { /* tiến trình đã thoát: giữ "?" */ }
+            catch (InvalidOperationException) { /* như trên */ }
             return title + " (" + proc + ")";
         }
     }

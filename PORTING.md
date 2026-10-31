@@ -17,8 +17,8 @@
 | Lời chào "Good morning / Isn't it late / Miss me, choom." | `Speech/Greeting.cs` | Chỉ hiện bằng chữ (chưa có giọng) |
 | Tay chân (`Hands.cs`, `Computer.cs`): mở web/app, đóng, chuột, phím, chụp màn hình | `Actions/*` | Viết lại gọn (~700 dòng thay vì ~3.200), thêm danh sách cho phép + xin xác nhận |
 | Gọi NVIDIA (endpoint kiểu OpenAI) | `Ai/NvidiaProvider.cs` | Có function-calling, tự thử lại không công cụ nếu mô hình không hỗ trợ |
-| Khay hệ thống, chạy nền, khởi động cùng Windows (`Startup.cs`) | `Ui/TrayApp.cs` | Khóa `HKCU\...\Run`, không cần quyền Admin |
-| Một thể hiện duy nhất, nhật ký | `Program.cs`, `Core/Log.cs` | |
+| Khay hệ thống, chạy nền, khởi động cùng Windows (`Startup.cs`) | `Ui/TrayApp.cs`, `Ui/MainForm.cs`, `Core/Autostart.cs` | Ứng dụng exe có cửa sổ chính; tự bật `HKCU\...\Run` ở lần chạy đầu (kèm `--autostart` để chạy êm); không cần Admin |
+| Một thể hiện duy nhất, nhật ký | `Program.cs`, `Core/Log.cs` | Mở lần hai chỉ đưa cửa sổ chính lên (EventWaitHandle) |
 | Giấy phép + dòng "Required Notice" | `LICENSE.md`, `NOTICE.md` | |
 
 ## B. Mới (bản gốc không có)
@@ -28,7 +28,9 @@
 - **Nhập khóa API Gemini/NVIDIA từ app Android** (Cài đặt) — Host lưu mã hóa DPAPI, chỉ trả về "đã đặt/4 ký tự cuối".
 - **Bong bóng hoạt động**: bắt lệnh → "Đang mở YouTube…" → tự mất.
 - Công cụ `play_youtube`, `list_windows`, `get_active_window`, `media`, `volume`, `lock_screen`, nút nhanh chạy thẳng không qua AI.
-- Chuyển nhà cung cấp AI tự động khi lỗi / hết hạn mức.
+- **Chuỗi nhiều nhà cung cấp AI** do người dùng tự sắp xếp: Gemini, Cloudflare Worker (không khóa), Groq (gpt-oss-20b), LiteRouter (DeepSeek V4.1 Flash), OpenRouter, NVIDIA; tự chuyển + nghỉ khi 429; tiết kiệm lượt AI.
+- **Dừng lệnh** (`cancel`), timeout tập trung, mọi gói có `id` luôn nhận `reply`; chat **Nhật ký lỗi**.
+- Công cụ `window_control` (phóng to/thu nhỏ/khôi phục/F11) và `set_default_browser`; `BrowserLauncher` (Chrome mặc định, không rơi âm thầm về IE).
 
 ## C. KHÔNG port (và lý do)
 
@@ -52,7 +54,7 @@
 `SetThreadDpi*/GetDpiFor*` · `System.Speech` · cú pháp C# 6+ (`$""`, `?.`, `nameof`, `=>` thành viên, `out var`, `when`, `{ get; } =`...).
 
 **Win32 đang dùng (tất cả có từ Windows 2000/XP/Vista):** `keybd_event`, `mouse_event`, `SetCursorPos`, `SendInput`, `LockWorkStation`,
-`GetForegroundWindow`, `GetWindowText`, `GetWindowThreadProcessId`, `GetDC/ReleaseDC`, `ReleaseCapture`, `SendMessage`, `UpdateLayeredWindow`,
+`GetForegroundWindow`, `GetWindowText`, `GetWindowThreadProcessId`, `EnumWindows`, `IsWindowVisible`, `IsIconic`, `IsZoomed`, `ShowWindow`, `SetForegroundWindow`, `BringWindowToTop`, `AttachThreadInput`, `GetClassName`, COM `IApplicationAssociationRegistration` (Win7), `GetDC/ReleaseDC`, `ReleaseCapture`, `SendMessage`, `UpdateLayeredWindow`,
 GDI (`CreateCompatibleDC`, `SelectObject`, `DeleteObject`, `DeleteDC`), `SHEmptyRecycleBin`, `SetProcessWorkingSetSize`, winmm `waveIn*`.
 
 **.NET dùng:** `HttpWebRequest`, `TcpListener`, `UdpClient`, `Aes` (AesCryptoServiceProvider), `Rfc2898DeriveBytes`, `HMACSHA256`,

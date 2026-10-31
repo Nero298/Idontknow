@@ -45,7 +45,7 @@ namespace CapriHost.Network
         {
             running = false;
             try { if (udp != null) udp.Close(); }
-            catch (SocketException) { }
+            catch (SocketException) { /* đã đóng */ }
         }
 
         private void Loop()
@@ -61,7 +61,7 @@ namespace CapriHost.Network
                     byte[] reply = Encoding.UTF8.GetBytes("CAPRI_HOST|" + Environment.MachineName + "|" + tcpPort);
                     udp.Send(reply, reply.Length, from);
                 }
-                catch (SocketException) { if (!running) return; }
+                catch (SocketException) { if (!running) return; /* gói UDP lỗi: bỏ qua, vòng lặp tiếp tục */ }
                 catch (ObjectDisposedException) { return; }
             }
         }
@@ -84,7 +84,7 @@ namespace CapriHost.Network
                     }
                 }
             }
-            catch (NetworkInformationException) { }
+            catch (NetworkInformationException error) { Log.Warn("Mạng", "Không đọc được danh sách card mạng: " + error.Message, null); }
             return found;
         }
     }

@@ -15,6 +15,8 @@ data class ChatMessage(
     val notes: List<Note> = emptyList(),
     val image: String? = null,           // đường dẫn ảnh chụp màn hình
     val voice: Boolean = false,          // tin nhắn của người dùng là giọng nói
+    val cancelled: Boolean = false,      // đã bấm Dừng (hoặc bị lệnh mới thay)
+    val info: String = "",               // dòng nhỏ: thời gian từng bước, "Gemini hết lượt -> Groq"...
     val time: Long = System.currentTimeMillis()
 )
 
@@ -37,7 +39,9 @@ class ChatStore(private val dir: File) {
     fun save(conversation: Conversation) {
         try {
             File(dir, conversation.id + ".json").writeText(toJson(conversation).toString(), Charsets.UTF_8)
-        } catch (_: Exception) { }
+        } catch (e: java.io.IOException) {
+            android.util.Log.w("Capri", "Không lưu được cuộc trò chuyện ${conversation.id}: ${e.message}")
+        }
     }
 
     fun delete(id: String) {
@@ -67,12 +71,18 @@ class ChatStore(private val dir: File) {
                     notes = notes,
                     image = m.optString("image").ifEmpty { null },
                     voice = m.optBoolean("voice"),
+                    cancelled = m.optBoolean("cancelled"),
+                    info = m.optString("info"),
                     time = m.optLong("time")
                 )
             )
         }
         Conversation(o.getString("id"), o.optString("title", "Cuộc trò chuyện mới"), o.optLong("updated"), list)
-    } catch (_: Exception) {
+    } catch (e: org.json.JSONException) {
+        android.util.Log.w("Capri", "Bỏ qua file chat hỏng ${file.name}: ${e.message}")
+        null
+    } catch (e: java.io.IOException) {
+        android.util.Log.w("Capri", "Không đọc được ${file.name}: ${e.message}")
         null
     }
 
@@ -86,7 +96,7 @@ class ChatStore(private val dir: File) {
                     .put("id", m.id).put("role", m.role).put("text", m.text)
                     .put("error", m.error).put("pending", m.pending).put("notes", notes)
                     .put("image", m.image ?: "")
-                    .put("voice", m.voice).put("time", m.time)
+                    .put("voice", m.voice).put("cancelled", m.cancelled).put("info", m.info).put("time", m.time)
             )
         }
         return JSONObject().put("id", c.id).put("title", c.title).put("updated", c.updated).put("messages", arr)

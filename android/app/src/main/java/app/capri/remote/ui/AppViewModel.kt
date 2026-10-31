@@ -8,12 +8,17 @@ import app.capri.remote.audio.Recorder
 import app.capri.remote.data.ChatMessage
 import app.capri.remote.data.ChatStore
 import app.capri.remote.data.Conversation
+import app.capri.remote.data.LogFormat
+import app.capri.remote.data.LogItem
 import app.capri.remote.data.Note
 import app.capri.remote.data.Prefs
 import app.capri.remote.net.CapriClient
 import app.capri.remote.net.ConnState
 import app.capri.remote.net.Discovery
 import app.capri.remote.net.FoundHost
+import app.capri.remote.net.Timeouts
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -25,7 +30,7 @@ import org.json.JSONObject
 import java.io.File
 import java.util.UUID
 
-enum class Screen { Chat, Connect, Settings }
+enum class Screen { Chat, Connect, Settings, Log }
 
 data class ConfirmRequest(val cid: String, val text: String)
 
@@ -35,8 +40,7 @@ data class UiState(
     val conversations: List<Conversation> = emptyList(),
     val currentId: String = "",
     val settings: JSONObject? = null,
-    val geminiModels: List<String> = emptyList(),
-    val nvidiaModels: List<String> = emptyList(),
+    val models: Map<String, List<String>> = emptyMap(),     // theo nhà cung cấp: gemini, groq, openrouter, literouter, nvidia
     val modelsNote: String? = null,
     val confirm: ConfirmRequest? = null,
     val recording: Boolean = false,
@@ -45,7 +49,12 @@ data class UiState(
     val port: Int = 47821,
     val found: List<FoundHost> = emptyList(),
     val scanning: Boolean = false,
-    val toast: String? = null
+    val toast: String? = null,
+    val logs: List<LogItem> = emptyList(),                  // chat "Nhật ký lỗi" (Host + điện thoại, cũ -> mới)
+    val hostInfo: JSONObject? = null,                       // phiên bản/giờ/mô hình AI của Host (cho phần đầu khi Sao chép)
+    val logUnread: Boolean = false,                         // chấm đỏ: có lỗi mới chưa xem
+    val logCmd: String? = null,                             // đang lọc log theo một lệnh ("Xem log" ở tin nhắn lỗi)
+    val draft: String? = null                               // "Sửa rồi gửi lại": nội dung đưa vào ô nhập
 )
 
 /** Toàn bộ trạng thái và logic của app. Màn hình chỉ vẽ UiState và gọi các hàm ở đây. */
@@ -54,7 +63,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val store = ChatStore(File(app.filesDir, "chats"))
     private val imageDir = File(app.filesDir, "img").apply { mkdirs() }
     private val recorder = Recorder()
-    private val client = CapriClient(prefs, viewModelScope)
+    private val client = CapriClient(prefs, viewModelScope) { level, src, msg -> addLocalLog(level, src, msg, "") }
+    private val pendingJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
+    private val maxLogs = 400
 
     private val _ui = MutableStateFlow(UiState())
     val ui: StateFlow<UiState> = _ui
@@ -80,11 +91,75 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 if (state is ConnState.Online) {
                     client.send(JSONObject().put("t", "settings.get"))
+                    client.send(JSONObject().put("t", "log.get").put("n", 100))
+                }
+                // Mất kết nối khi đang chờ: Host đã huỷ các lệnh đó, đừng để vòng tròn quay mãi.
+                if (state is ConnState.Offline || state is ConnState.Failed) {
+                    failAllPending("Mất kết nối với máy tính khi đang chờ trả lời. Kết nối lại rồi bấm Gửi lại.")
                 }
             }
         }
-        viewModelScope.launch { client.events.collect { handleEvent(it) } }
+        viewModelScope.launch {
+            client.events.collect { event ->
+                // Một gói lạ/hỏng không được phép làm sập luồng nhận: ghi log rồi đọc tiếp.
+                try { handleEvent(event) } catch (e: Exception) {
+                    addLocalLog("ERROR", "Ứng dụng", "Lỗi xử lý gói '${event.optString("t")}': ${e.javaClass.simpleName} ${e.message}", event.optString("id"))
+                }
+            }
+        }
         if (prefs.host.isNotBlank()) client.start()
+    }
+
+    // ---------------------------------------------------------------- nhật ký (chat "Nhật ký lỗi")
+
+    fun appVersion(): String = try {
+        val app = getApplication<Application>()
+        app.packageManager.getPackageInfo(app.packageName, 0).versionName ?: "?"
+    } catch (e: android.content.pm.PackageManager.NameNotFoundException) { "?" }
+
+    private fun addLocalLog(level: String, src: String, msg: String, cmd: String) {
+        val item = LogItem(System.currentTimeMillis(), level, src, msg.take(300), if (msg.length > 300) msg.take(1500) else "", cmd, fromHost = false)
+        appendLog(item)
+    }
+
+    private fun appendLog(item: LogItem) {
+        _ui.update { st ->
+            if (st.logs.any { it.key() == item.key() }) st
+            else st.copy(
+                logs = (st.logs + item).takeLast(maxLogs),
+                logUnread = st.logUnread || (item.level == "ERROR" && st.screen != Screen.Log)
+            )
+        }
+    }
+
+    /** Mở chat Nhật ký lỗi (tuỳ chọn lọc theo id lệnh) và hỏi Host log mới nhất. */
+    fun openLog(cmd: String? = null) {
+        _ui.update { it.copy(screen = Screen.Log, logCmd = cmd, logUnread = false) }
+        client.send(JSONObject().put("t", "log.get").put("n", 300))
+    }
+
+    fun setLogCmd(cmd: String?) = _ui.update { it.copy(logCmd = cmd) }
+
+    fun refreshLog() { client.send(JSONObject().put("t", "log.get").put("n", 300)) }
+
+    fun clearLog() {
+        client.send(JSONObject().put("t", "log.clear"))
+        _ui.update { it.copy(logs = emptyList(), logUnread = false) }
+    }
+
+    fun logReport(items: List<LogItem>): String = LogFormat.report(appVersion(), _ui.value.hostInfo, items)
+
+    private fun mergeHostLog(o: JSONObject) {
+        val arr = o.optJSONArray("items")
+        val host = ArrayList<LogItem>()
+        if (arr != null) for (i in 0 until arr.length()) {
+            val item = arr.optJSONObject(i) ?: continue
+            host.add(LogItem.fromJson(item))
+        }
+        _ui.update { st ->
+            val local = st.logs.filter { !it.fromHost }
+            st.copy(logs = (host + local).sortedBy { it.ts }.takeLast(maxLogs), hostInfo = o)
+        }
     }
 
     override fun onCleared() {
@@ -102,6 +177,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun consumeToast() = _ui.update { it.copy(toast = null) }
+
+    fun consumeDraft() = _ui.update { it.copy(draft = null) }
 
     private fun toast(text: String) = _ui.update { it.copy(toast = text) }
 
@@ -189,7 +266,69 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         mutate(conv.id) { c -> c.copy(messages = c.messages.map { if (it.id == messageId) change(it) else it }) }
     }
 
-    private fun fail(messageId: String, text: String) = updateMessage(messageId) { it.copy(text = text, error = true, pending = false) }
+    private fun fail(messageId: String, text: String) {
+        pendingJobs.remove(messageId)?.cancel()
+        updateMessage(messageId) { it.copy(text = text, error = true, pending = false) }
+        addLocalLog("ERROR", "Lệnh", text, messageId)
+    }
+
+    private fun isPending(messageId: String): Boolean =
+        _ui.value.conversations.any { c -> c.messages.any { it.id == messageId && it.pending } }
+
+    private fun failAllPending(text: String) {
+        val ids = _ui.value.conversations.flatMap { c -> c.messages.filter { it.pending }.map { it.id } }
+        for (id in ids) fail(id, text)
+    }
+
+    /** Hẹn giờ chờ trả lời: hết hạn thì báo lỗi đỏ (không bao giờ quay vô hạn) và nhờ Host dừng lệnh đó. */
+    private fun watch(id: String, ms: Long) {
+        pendingJobs.remove(id)?.cancel()
+        pendingJobs[id] = viewModelScope.launch {
+            delay(ms)
+            if (isPending(id)) {
+                client.send(JSONObject().put("t", "cancel").put("id", id))
+                fail(id, "Hết ${ms / 1000} giây mà Host chưa trả lời. Kiểm tra Host đang chạy và mạng WiFi, rồi bấm Gửi lại hoặc Xem log.")
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- dừng / gửi lại
+
+    /** Bấm Dừng: báo Host huỷ ngay và đánh dấu "Đã dừng" tại chỗ (không đợi Host). */
+    fun stop(id: String) {
+        pendingJobs.remove(id)?.cancel()
+        client.send(JSONObject().put("t", "cancel").put("id", id))
+        updateMessage(id) { it.copy(text = "Đã dừng.", cancelled = true, error = false, pending = false) }
+    }
+
+    fun stopAll() {
+        val ids = _ui.value.conversations.flatMap { c -> c.messages.filter { it.pending }.map { it.id } }
+        client.send(JSONObject().put("t", "cancel.all"))
+        for (id in ids) {
+            pendingJobs.remove(id)?.cancel()
+            updateMessage(id) { it.copy(text = "Đã dừng.", cancelled = true, error = false, pending = false) }
+        }
+    }
+
+    private fun userTextFor(assistantId: String): String? {
+        for (c in _ui.value.conversations) {
+            val m = c.messages.firstOrNull { it.id == "u_$assistantId" }
+            if (m != null) return m.text
+        }
+        return null
+    }
+
+    fun resend(assistantId: String) {
+        val text = userTextFor(assistantId)
+        if (text.isNullOrBlank() || text.startsWith("Đang nhận dạng")) { toast("Không còn nội dung để gửi lại"); return }
+        sendText(text)
+    }
+
+    fun editAndResend(assistantId: String) {
+        val text = userTextFor(assistantId)
+        if (text.isNullOrBlank() || text.startsWith("Đang nhận dạng")) { toast("Không còn nội dung để sửa"); return }
+        _ui.update { it.copy(draft = text) }
+    }
 
     private fun newId() = UUID.randomUUID().toString().replace("-", "").take(12)
 
@@ -202,7 +341,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val id = newId()
         addMessages(convId, ChatMessage("u_$id", "user", text), ChatMessage(id, "assistant", "", pending = true))
         val sent = client.send(JSONObject().put("t", "chat").put("id", id).put("conv", convId).put("text", text))
-        if (!sent) fail(id, "Chưa kết nối với Capri Host. Kiểm tra WiFi và Host trên máy tính rồi thử lại.")
+        if (!sent) fail(id, "Chưa kết nối với Capri Host. Kiểm tra WiFi và Host trên máy tính rồi thử lại.") else watch(id, Timeouts.REPLY_CHAT_MS)
     }
 
     /** Nút nhanh: chạy thẳng một hành động trên máy tính, không qua AI. */
@@ -211,7 +350,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val id = newId()
         addMessages(convId, ChatMessage("u_$id", "user", label), ChatMessage(id, "assistant", "", pending = true))
         val sent = client.send(JSONObject().put("t", "quick").put("id", id).put("tool", tool).put("args", args))
-        if (!sent) fail(id, "Chưa kết nối với Capri Host.")
+        if (!sent) fail(id, "Chưa kết nối với Capri Host.") else watch(id, Timeouts.REPLY_QUICK_MS)
     }
 
     fun startRecording(): Boolean {
@@ -237,7 +376,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) {
             val data = Base64.encodeToString(wav, Base64.NO_WRAP)
             val sent = client.send(JSONObject().put("t", "voice").put("id", id).put("conv", convId).put("data", data))
-            if (!sent) fail(id, "Chưa kết nối với Capri Host.")
+            if (!sent) fail(id, "Chưa kết nối với Capri Host.") else watch(id, Timeouts.REPLY_VOICE_MS)
         }
     }
 
@@ -271,6 +410,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             "reply" -> onReply(o)
             "transcript" -> updateMessage("u_" + o.optString("id")) { it.copy(text = o.optString("text")) }
             "confirm" -> _ui.update { it.copy(confirm = ConfirmRequest(o.optString("cid"), o.optString("text"))) }
+            "confirm.expire" -> _ui.update { st -> if (st.confirm?.cid == o.optString("cid")) st.copy(confirm = null) else st }
+            "log" -> mergeHostLog(o)
+            "log.push" -> {
+                val item = o.optJSONObject("item")
+                if (item != null) appendLog(LogItem.fromJson(item))
+            }
+            "cancel.ok" -> Unit
             "settings" -> {
                 _ui.update { it.copy(settings = o.optJSONObject("values")) }
                 if (o.optString("id") == "save") toast("Đã lưu cài đặt trên máy tính")
@@ -280,8 +426,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val ok = o.optBoolean("ok")
                 _ui.update { st ->
                     val note = if (ok) "Tìm thấy ${items.size} mô hình" else o.optString("msg")
-                    if (o.optString("provider") == "nvidia") st.copy(nvidiaModels = items, modelsNote = note)
-                    else st.copy(geminiModels = items, modelsNote = note)
+                    st.copy(models = st.models + (o.optString("provider") to items), modelsNote = note)
                 }
             }
         }
@@ -298,13 +443,23 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             notes.add(Note(n.optString("tool"), n.optBoolean("ok"), n.optString("text")))
         }
         val imageData = o.optString("image")
+        pendingJobs.remove(id)?.cancel()
+        val cancelled = o.optBoolean("cancelled")
+        val infoParts = ArrayList<String>()
+        if (o.optString("switched").isNotEmpty()) infoParts.add("↪ " + o.optString("switched"))
+        if (o.optString("summary").isNotEmpty()) infoParts.add("⏱ " + o.optString("summary"))
+        val info = infoParts.joinToString("\n")
+        if (error && id != "greet") refreshLog()
         viewModelScope.launch {
             val imagePath = if (imageData.isNotEmpty()) withContext(Dispatchers.IO) { save(imageDir, "$id.jpg", imageData) } else null
             if (id == "greet") {
                 // Lời chào của Capri (chữ) khi vừa kết nối.
                 addMessages(_ui.value.currentId, ChatMessage("g_" + System.currentTimeMillis(), "assistant", text))
             } else {
-                updateMessage(id) { it.copy(text = text, error = error, pending = false, notes = notes, image = imagePath) }
+                updateMessage(id) {
+                    if (it.cancelled && !cancelled) it       // người dùng đã bấm Dừng tại chỗ: giữ "Đã dừng"
+                    else it.copy(text = text, error = error, pending = false, notes = notes, image = imagePath, cancelled = cancelled, info = info)
+                }
             }
         }
     }
@@ -313,7 +468,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val file = File(dir, name)
         file.writeBytes(Base64.decode(base64, Base64.DEFAULT))
         file.absolutePath
-    } catch (_: Exception) {
+    } catch (e: java.io.IOException) {
+        addLocalLog("WARN", "Ứng dụng", "Không lưu được ảnh $name: ${e.message}", "")
+        null
+    } catch (e: IllegalArgumentException) {
+        addLocalLog("WARN", "Ứng dụng", "Ảnh $name gửi lên bị hỏng: ${e.message}", "")
         null
     }
 

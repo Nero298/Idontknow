@@ -20,7 +20,8 @@ namespace CapriHost.Core
     // Phần lớn cài đặt chỉnh được từ app Android (gói tin settings.set).
     internal sealed class Settings
     {
-        internal const string Version = "1.0.0";
+        internal const string Version = "1.1.0";
+        internal const int ProtocolVersion = 2;       // v2 = thêm cancel, log.*, reply.cmd... (xem PORTING.md); bản cũ v1 vẫn kết nối được
         internal static readonly Settings Current = new Settings();
 
         private static string dataDir;
@@ -32,8 +33,21 @@ namespace CapriHost.Core
         internal string NvidiaKey = "";
         internal string GeminiModel = "gemini-flash-latest";
         internal string NvidiaModel = "nvidia/nemotron-3.5-super-vl-120b-a12b";
-        internal string Primary = "gemini";          // "gemini" hoặc "nvidia"
-        internal bool Failover = true;               // lỗi thì thử nhà cung cấp còn lại
+        internal string Primary = "gemini";          // (cũ) nhà cung cấp ưu tiên; nay dùng ProviderOrder
+        internal bool Failover = true;               // lỗi / hết hạn mức thì thử nhà cung cấp kế tiếp trong ProviderOrder
+
+        // Chuỗi AI tự đổi khi hết hạn mức (429): Gemini -> Cloudflare Worker (không cần khóa) -> Groq -> OpenRouter -> NVIDIA.
+        internal string ProviderOrder = "gemini,cloudflare,groq,literouter,openrouter,nvidia";   // người dùng tự sắp xếp trong Cài đặt
+        internal string ProviderOff = "";            // các nhà cung cấp người dùng tắt (ngăn cách bằng dấu phẩy)
+        internal string LiteRouterKey = "";
+        internal string LiteRouterModel = "deepseek-v4.1-flash:free";
+        internal string OpenRouterKey = "";
+        internal string OpenRouterModel = "openrouter/auto";
+        internal string GroqKey = "";
+        internal string GroqModel = "openai/gpt-oss-20b";
+        internal bool CloudflareOn = true;
+        internal string CloudflareUrl = "https://ai-agent-controller.ai-agent-vy.workers.dev";
+        internal bool SaveQuota = true;              // chạy công cụ xong là kết thúc, không gọi AI lần 2 (tiết kiệm lượt Gemini)
 
         // ---- Tính cách ----
         internal string Language = "Vietnamese";
@@ -49,6 +63,9 @@ namespace CapriHost.Core
         internal string CustomApps = "";             // mỗi dòng: tên=đường dẫn
         internal bool PetVisible = true;
         internal int Port = 47821;
+        internal string Browser = "chrome";          // chrome | firefox | edge | default | đường dẫn tới .exe
+        internal bool BypassProxy = true;            // không dò proxy hệ thống (Win7 dò proxy rất chậm)
+        internal bool FirstRunDone = false;          // đã chạy lần đầu (đã bật tự chạy cùng Windows một lần)
 
         internal readonly List<PairedDevice> Devices = new List<PairedDevice>();
 
@@ -61,8 +78,8 @@ namespace CapriHost.Core
                     string root = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
                     dataDir = Path.Combine(root, "CapriHost");
                     try { Directory.CreateDirectory(dataDir); }
-                    catch (IOException) { }
-                    catch (UnauthorizedAccessException) { }
+                    catch (IOException) { /* không tạo được thư mục: các lần ghi file sau sẽ báo lỗi cụ thể */ }
+                    catch (UnauthorizedAccessException) { /* như trên */ }
                 }
                 return dataDir;
             }
@@ -81,8 +98,22 @@ namespace CapriHost.Core
                     if (!File.Exists(FilePath)) return;
                     Dictionary<string, object> map = Json.ReadObject(File.ReadAllText(FilePath, Encoding.UTF8));
                     if (map == null) return;
-                    GeminiKey = Open(Json.Str(map, "gemini_key", ""));
-                    NvidiaKey = Open(Json.Str(map, "nvidia_key", ""));
+                    GeminiKey = CleanKey(Open(Json.Str(map, "gemini_key", "")));
+                    NvidiaKey = CleanKey(Open(Json.Str(map, "nvidia_key", "")));
+                    OpenRouterKey = CleanKey(Open(Json.Str(map, "openrouter_key", "")));
+                    GroqKey = CleanKey(Open(Json.Str(map, "groq_key", "")));
+                    LiteRouterKey = CleanKey(Open(Json.Str(map, "literouter_key", "")));
+                    LiteRouterModel = Json.Str(map, "literouter_model", LiteRouterModel);
+                    ProviderOff = NormalizeOff(Json.Str(map, "provider_off", ProviderOff));
+                    OpenRouterModel = Json.Str(map, "openrouter_model", OpenRouterModel);
+                    GroqModel = Json.Str(map, "groq_model", GroqModel);
+                    ProviderOrder = NormalizeOrder(Json.Str(map, "provider_order", ProviderOrder));
+                    CloudflareOn = Json.Bool(map, "cloudflare_on", CloudflareOn);
+                    CloudflareUrl = Json.Str(map, "cloudflare_url", CloudflareUrl);
+                    SaveQuota = Json.Bool(map, "save_quota", SaveQuota);
+                    Browser = Json.Str(map, "browser", Browser);
+                    BypassProxy = Json.Bool(map, "bypass_proxy", BypassProxy);
+                    FirstRunDone = Json.Bool(map, "first_run_done", FirstRunDone);
                     GeminiModel = Json.Str(map, "gemini_model", GeminiModel);
                     NvidiaModel = Json.Str(map, "nvidia_model", NvidiaModel);
                     Primary = Json.Str(map, "primary", Primary);
@@ -130,6 +161,11 @@ namespace CapriHost.Core
                 {
                     Dictionary<string, object> map = Json.D(
                         "gemini_key", Seal(GeminiKey), "nvidia_key", Seal(NvidiaKey),
+                        "openrouter_key", Seal(OpenRouterKey), "groq_key", Seal(GroqKey), "literouter_key", Seal(LiteRouterKey),
+                        "literouter_model", LiteRouterModel, "provider_off", ProviderOff,
+                        "openrouter_model", OpenRouterModel, "groq_model", GroqModel, "provider_order", ProviderOrder,
+                        "cloudflare_on", CloudflareOn, "cloudflare_url", CloudflareUrl, "save_quota", SaveQuota,
+                        "browser", Browser, "bypass_proxy", BypassProxy, "first_run_done", FirstRunDone,
                         "gemini_model", GeminiModel, "nvidia_model", NvidiaModel, "primary", Primary, "failover", Failover,
                         "language", Language, "nickname", Nickname, "wordiness", Wordiness, "personality", Personality,
                         "greet", Greet,
@@ -159,11 +195,29 @@ namespace CapriHost.Core
         {
             lock (gate)
             {
-                if (Json.Has(patch, "gemini_key")) GeminiKey = (Json.Str(patch, "gemini_key", "") ?? "").Trim();
-                if (Json.Has(patch, "nvidia_key")) NvidiaKey = (Json.Str(patch, "nvidia_key", "") ?? "").Trim();
+                if (Json.Has(patch, "gemini_key")) GeminiKey = CleanKey(Json.Str(patch, "gemini_key", ""));
+                if (Json.Has(patch, "nvidia_key")) NvidiaKey = CleanKey(Json.Str(patch, "nvidia_key", ""));
+                if (Json.Has(patch, "openrouter_key")) OpenRouterKey = CleanKey(Json.Str(patch, "openrouter_key", ""));
+                if (Json.Has(patch, "groq_key")) GroqKey = CleanKey(Json.Str(patch, "groq_key", ""));
+                if (Json.Has(patch, "literouter_key")) LiteRouterKey = CleanKey(Json.Str(patch, "literouter_key", ""));
+                if (Json.Has(patch, "literouter_model")) LiteRouterModel = Clean(Json.Str(patch, "literouter_model"), LiteRouterModel);
+                if (Json.Has(patch, "provider_off")) ProviderOff = NormalizeOff(Json.Str(patch, "provider_off", ProviderOff));
+                if (Json.Has(patch, "openrouter_model")) OpenRouterModel = Clean(Json.Str(patch, "openrouter_model"), OpenRouterModel);
+                if (Json.Has(patch, "groq_model")) GroqModel = Clean(Json.Str(patch, "groq_model"), GroqModel);
+                if (Json.Has(patch, "provider_order")) ProviderOrder = NormalizeOrder(Json.Str(patch, "provider_order", ProviderOrder));
+                if (Json.Has(patch, "cloudflare_on")) CloudflareOn = Json.Bool(patch, "cloudflare_on", CloudflareOn);
+                if (Json.Has(patch, "cloudflare_url")) CloudflareUrl = Clean(Json.Str(patch, "cloudflare_url"), CloudflareUrl);
+                if (Json.Has(patch, "save_quota")) SaveQuota = Json.Bool(patch, "save_quota", SaveQuota);
+                if (Json.Has(patch, "browser")) Browser = Clean(Json.Str(patch, "browser"), "chrome").Trim('"');
+                if (Json.Has(patch, "bypass_proxy")) BypassProxy = Json.Bool(patch, "bypass_proxy", BypassProxy);
                 if (Json.Has(patch, "gemini_model")) GeminiModel = Clean(Json.Str(patch, "gemini_model"), GeminiModel);
                 if (Json.Has(patch, "nvidia_model")) NvidiaModel = Clean(Json.Str(patch, "nvidia_model"), NvidiaModel);
-                if (Json.Has(patch, "primary")) Primary = Json.Str(patch, "primary") == "nvidia" ? "nvidia" : "gemini";
+                if (Json.Has(patch, "primary"))
+                {
+                    // Tương thích app cũ: "primary" đưa nhà cung cấp đó lên đầu chuỗi.
+                    Primary = Json.Str(patch, "primary") == "nvidia" ? "nvidia" : "gemini";
+                    ProviderOrder = NormalizeOrder(Primary + "," + ProviderOrder);
+                }
                 if (Json.Has(patch, "failover")) Failover = Json.Bool(patch, "failover", Failover);
                 if (Json.Has(patch, "language")) Language = Clean(Json.Str(patch, "language"), "Vietnamese");
                 if (Json.Has(patch, "nickname")) Nickname = (Json.Str(patch, "nickname", "") ?? "").Trim();
@@ -185,6 +239,13 @@ namespace CapriHost.Core
                 return Json.D(
                     "gemini_key_set", GeminiKey.Length > 0, "gemini_key_hint", Hint(GeminiKey),
                     "nvidia_key_set", NvidiaKey.Length > 0, "nvidia_key_hint", Hint(NvidiaKey),
+                    "openrouter_key_set", OpenRouterKey.Length > 0, "openrouter_key_hint", Hint(OpenRouterKey),
+                    "groq_key_set", GroqKey.Length > 0, "groq_key_hint", Hint(GroqKey),
+                    "literouter_key_set", LiteRouterKey.Length > 0, "literouter_key_hint", Hint(LiteRouterKey),
+                    "literouter_model", LiteRouterModel, "provider_off", ProviderOff,
+                    "openrouter_model", OpenRouterModel, "groq_model", GroqModel, "provider_order", ProviderOrder,
+                    "cloudflare_on", CloudflareOn, "cloudflare_url", CloudflareUrl, "save_quota", SaveQuota,
+                    "browser", Browser, "bypass_proxy", BypassProxy,
                     "gemini_model", GeminiModel, "nvidia_model", NvidiaModel, "primary", Primary, "failover", Failover,
                     "language", Language, "nickname", Nickname, "wordiness", Wordiness, "personality", Personality,
                     "greet", Greet,
@@ -226,6 +287,48 @@ namespace CapriHost.Core
         }
 
         // ---------------------------------------------------------------- tiện ích
+
+        // Khóa API chỉ gồm ký tự ASCII in được (không khoảng trắng). Ký tự vô hình (zero-width, NBSP, BOM...)
+        // dán nhầm từ điện thoại sẽ làm HttpWebRequest ném ArgumentException khi đặt header.
+        internal static string CleanKey(string raw)
+        {
+            if (string.IsNullOrEmpty(raw)) return "";
+            StringBuilder builder = new StringBuilder(raw.Length);
+            foreach (char c in raw)
+                if (c > ' ' && c < (char)0x7F) builder.Append(c);
+            return builder.ToString();
+        }
+
+        internal static readonly string[] AllProviders = { "gemini", "cloudflare", "groq", "literouter", "openrouter", "nvidia" };
+
+        // Chuỗi thứ tự: bỏ trùng, bỏ tên lạ, thêm các nhà còn thiếu vào cuối.
+        internal static string NormalizeOrder(string raw)
+        {
+            List<string> result = new List<string>();
+            foreach (string part in (raw ?? "").Split(','))
+            {
+                string name = part.Trim().ToLowerInvariant();
+                if (Array.IndexOf(AllProviders, name) >= 0 && !result.Contains(name)) result.Add(name);
+            }
+            foreach (string name in AllProviders) if (!result.Contains(name)) result.Add(name);
+            return string.Join(",", result.ToArray());
+        }
+
+        internal static string NormalizeOff(string raw)
+        {
+            List<string> result = new List<string>();
+            foreach (string part in (raw ?? "").Split(','))
+            {
+                string name = part.Trim().ToLowerInvariant();
+                if (Array.IndexOf(AllProviders, name) >= 0 && !result.Contains(name)) result.Add(name);
+            }
+            return string.Join(",", result.ToArray());
+        }
+
+        internal bool IsProviderOff(string name)
+        {
+            return Array.IndexOf((ProviderOff ?? "").Split(','), name) >= 0;
+        }
 
         private static string Clean(string value, string fallback)
         {

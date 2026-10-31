@@ -16,7 +16,7 @@
     <Prefer32Bit>false</Prefer32Bit>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\chip.ico</ApplicationIcon>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <Product>Capri Host</Product>
     <Description>Capri desktop companion - host for the Capri Remote Android app</Description>
     <Deterministic>true</Deterministic>

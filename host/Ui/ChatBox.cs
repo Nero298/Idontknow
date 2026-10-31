@@ -17,6 +17,7 @@ namespace CapriHost.Ui
         private readonly TextBox input = new TextBox();
         private readonly Button send = new Button();
         private readonly Button mic = new Button();
+        private readonly Button stop = new Button();
         private readonly Label status = new Label();
         private readonly Mic recorder = new Mic();
         private bool busy;
@@ -52,6 +53,12 @@ namespace CapriHost.Ui
             mic.Dock = DockStyle.Right;
             mic.Click += delegate { ToggleMic(); };
 
+            stop.Text = "Dừng";
+            stop.Width = 52;
+            stop.Dock = DockStyle.Right;
+            stop.Visible = false;
+            stop.Click += delegate { hub.CancelAll("Bạn bấm Dừng ở cửa sổ chat trên PC"); };
+
             send.Text = "Gửi";
             send.Width = 56;
             send.Dock = DockStyle.Right;
@@ -66,6 +73,7 @@ namespace CapriHost.Ui
             bottom.Controls.Add(input);
             bottom.Controls.Add(mic);
             bottom.Controls.Add(send);
+            bottom.Controls.Add(stop);
             bottom.Controls.Add(status);
             Controls.Add(log);
             Controls.Add(bottom);
@@ -96,6 +104,7 @@ namespace CapriHost.Ui
             if (InvokeRequired) { BeginInvoke(new Action<bool, string>(SetBusy), value, message); return; }
             busy = value;
             send.Enabled = !value;
+            stop.Visible = value;
             status.Text = message;
         }
 
@@ -141,7 +150,8 @@ namespace CapriHost.Ui
             {
                 Hub.LocalReply reply = hub.AskLocal(text, wav, delegate(string heard) { Append("Bạn (giọng nói)", heard); });
                 foreach (ActionNote note in reply.Notes) Append("  ›", (note.Ok ? "✓ " : "✗ ") + note.Text);
-                Append("Capri", reply.Text);
+                Append(reply.Error ? "Capri (LỖI)" : "Capri", reply.Text);
+                if (!string.IsNullOrEmpty(reply.Summary)) Append("  ⏱", reply.Summary);
                 SetBusy(false, "");
             });
         }

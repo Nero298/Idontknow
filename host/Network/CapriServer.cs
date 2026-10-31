@@ -35,7 +35,7 @@ namespace CapriHost.Network
         {
             Alive = false;
             try { Tcp.Close(); }
-            catch (SocketException) { }
+            catch (SocketException) { /* socket đã đóng */ }
         }
     }
 
@@ -86,7 +86,7 @@ namespace CapriHost.Network
         {
             running = false;
             try { if (listener != null) listener.Stop(); }
-            catch (SocketException) { }
+            catch (SocketException) { /* đã dừng */ }
             List<ClientSession> copy;
             lock (sessions) copy = new List<ClientSession>(sessions);
             foreach (ClientSession session in copy) session.Close();
@@ -128,15 +128,15 @@ namespace CapriHost.Network
                 tcp.NoDelay = true;
                 tcp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
                 NetworkStream stream = tcp.GetStream();
-                stream.ReadTimeout = 10000;      // giai đoạn bắt tay: 10 giây
-                stream.WriteTimeout = 20000;
+                stream.ReadTimeout = Timeouts.TcpHandshakeMs;      // giai đoạn bắt tay
+                stream.WriteTimeout = Timeouts.TcpWriteMs;
                 SecureChannel channel = new SecureChannel(stream);
                 session = new ClientSession(tcp, channel);
                 session.Remote = remote;
 
                 if (!Handshake(session, channel, remote)) return;
 
-                stream.ReadTimeout = 45000;      // điện thoại ping mỗi 10 giây; im lặng 45 giây là coi như mất kết nối
+                stream.ReadTimeout = Timeouts.TcpIdleMs;      // điện thoại ping mỗi 10 giây; im lặng quá lâu là coi như mất kết nối
                 lock (sessions) sessions.Add(session);
                 Action<ClientSession> connected = Connected;
                 if (connected != null) connected(session);
@@ -155,15 +155,23 @@ namespace CapriHost.Network
                     ThreadPool.QueueUserWorkItem(delegate(object state)
                     {
                         try { handler(captured, captured2); }
-                        catch (Exception error) { Log.Error("Lỗi xử lý gói '" + Json.Str(captured2, "t", "?") + "'", error); }
+                        catch (Exception error)
+                        {
+                            // Không bao giờ nuốt lỗi: ghi log kèm stack trace VÀ báo lại cho điện thoại (nếu gói có id) để màn hình không treo.
+                            string packetId = Json.Str(captured2, "id", "");
+                            Log.Error("Lệnh", "Lỗi xử lý gói '" + Json.Str(captured2, "t", "?") + "'", error, packetId);
+                            if (packetId.Length > 0)
+                                captured.Send(Json.D("t", "reply", "id", packetId, "error", true,
+                                    "text", "Host gặp lỗi khi xử lý lệnh: " + error.GetType().Name + " - " + error.Message + ". Xem chi tiết trong chat 'Nhật ký lỗi'."));
+                        }
                     });
                 }
             }
-            catch (AuthException error) { Log.Info("Từ chối " + remote + ": " + error.Message); Fail(remote); }
-            catch (IOException) { }
-            catch (SocketException) { }
-            catch (ObjectDisposedException) { }
-            catch (Exception error) { Log.Error("Lỗi kết nối " + remote, error); }
+            catch (AuthException error) { Log.Warn("Mạng", "Từ chối " + remote + ": " + error.Message, null); Fail(remote); }
+            catch (IOException error) { Log.Info("Mạng", "Ngắt kết nối " + remote + ": " + error.Message, null); }
+            catch (SocketException error) { Log.Info("Mạng", "Lỗi socket " + remote + ": " + error.Message, null); }
+            catch (ObjectDisposedException) { /* phiên đã đóng chủ động */ }
+            catch (Exception error) { Log.Error("Mạng", "Lỗi kết nối " + remote, error, null); }
             finally
             {
                 if (session != null)
@@ -177,7 +185,7 @@ namespace CapriHost.Network
                 else
                 {
                     try { tcp.Close(); }
-                    catch (SocketException) { }
+                    catch (SocketException) { /* socket đã đóng */ }
                 }
             }
         }
@@ -216,7 +224,7 @@ namespace CapriHost.Network
 
             byte[] serverNonce = new byte[16];
             using (RandomNumberGenerator rng = RandomNumberGenerator.Create()) rng.GetBytes(serverNonce);
-            channel.SendPlain(Json.Write(Json.D("t", "hello_ok", "v", 1, "sn", Convert.ToBase64String(serverNonce),
+            channel.SendPlain(Json.Write(Json.D("t", "hello_ok", "v", Settings.ProtocolVersion, "sn", Convert.ToBase64String(serverNonce),
                 "host", Environment.MachineName, "known", known || mode == "code")));
             if (secret == null) return false;     // thiết bị lạ trong chế độ token: client sẽ báo cần ghép đôi
 
@@ -235,7 +243,7 @@ namespace CapriHost.Network
                 Pairing.Complete(name);
                 Log.Info("Đã ghép đôi với " + name);
             }
-            session.Send(Json.D("t", "ready", "host", Environment.MachineName, "version", Settings.Version));
+            session.Send(Json.D("t", "ready", "host", Environment.MachineName, "version", Settings.Version, "v", Settings.ProtocolVersion));
             return true;
         }
 

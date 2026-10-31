@@ -13,6 +13,8 @@ namespace CapriHost.Actions
         internal Action<string> Progress;
         // Đã có công cụ nào chạy trong lượt này chưa (để quyết định có được chuyển sang nhà cung cấp AI dự phòng không).
         internal bool ToolsRan;
+        // Lệnh đang chạy (để công cụ biết bị huỷ, đo giờ, gọi HTTP có thể Abort). Có thể null.
+        internal CapriHost.Core.CommandContext Cmd;
     }
 
     internal sealed class ToolOutcome

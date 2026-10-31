@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Text.RegularExpressions;
+using System.Threading;
 using CapriHost.Ai;
 using CapriHost.Core;
 
@@ -22,7 +23,7 @@ namespace CapriHost.Actions
                 new ToolParam("url", "string", "A full URL, a domain like youtube.com, or plain search words.", true)));
             s.Add(new ToolSpec("play_youtube", "Search YouTube for a song or video and open the top result in the browser so it starts playing. Use this when the user asks to play music or a video.",
                 new ToolParam("query", "string", "What to play, for example the song and artist.", true),
-                new ToolParam("browser", "string", "Browser to use, for example chrome or firefox. Leave empty for the default browser.", false)));
+                new ToolParam("browser", "string", "Browser to use: chrome, firefox, edge or default. Leave empty to use the browser chosen in settings (Chrome by default).", false)));
             s.Add(new ToolSpec("open_app", "Launch an application on the PC.",
                 new ToolParam("name", "string", "App name, for example: chrome, firefox, edge, discord, spotify, notepad, calculator, explorer, paint, taskmgr, word, excel, powerpoint, vscode, steam, zalo, control.", true),
                 new ToolParam("args", "string", "Optional arguments, for example a folder path for explorer.", false)));
@@ -57,6 +58,11 @@ namespace CapriHost.Actions
                 new ToolParam("action", "string", "Volume action.", true, "volume_up", "volume_down", "mute"),
                 new ToolParam("steps", "integer", "How many steps (each is about 2 percent). Default 5.", false)));
             s.Add(new ToolSpec("lock_screen", "Lock the Windows session."));
+            s.Add(new ToolSpec("window_control", "Maximize, minimize, restore or toggle full screen (F11) for a window. Works on the window in front unless a name is given.",
+                new ToolParam("action", "string", "What to do with the window.", true, "maximize", "minimize", "restore", "fullscreen"),
+                new ToolParam("target", "string", "Part of the window title or the program name, for example chrome. Leave empty for the window currently in front.", false)));
+            s.Add(new ToolSpec("set_default_browser", "Make Google Chrome the default web browser of Windows. Asks the user to confirm.",
+                new ToolParam("browser", "string", "Only chrome is supported.", false, "chrome")));
             specs = s;
             return s;
         }
@@ -90,6 +96,8 @@ namespace CapriHost.Actions
                 case "media": return "Đang chỉnh nhạc";
                 case "volume": return "Đang chỉnh âm lượng";
                 case "lock_screen": return "Đang khoá máy";
+                case "window_control": return "Đang chỉnh cửa sổ (" + Shorten(Json.Str(a, "action", ""), 14) + ")";
+                case "set_default_browser": return "Đang đặt trình duyệt mặc định";
             }
             return "Đang làm: " + name;
         }
@@ -101,7 +109,62 @@ namespace CapriHost.Actions
             if (ctx.UserInitiated) return true;
             if (ctx.Confirm == null) return false;
             try { return ctx.Confirm(question); }
-            catch (Exception) { return false; }
+            catch (CancelledException) { throw; }
+            catch (Exception error)
+            {
+                Log.Error("Công cụ", "Hỏi xác nhận bị lỗi -> coi như 'Không'", error, ctx.Cmd == null ? null : ctx.Cmd.Id);
+                return false;
+            }
+        }
+
+        // Chạy công cụ trên luồng RIÊNG (STA) và chờ có hạn (Timeouts.ForTool). Hết giờ -> "timeout"; bị Dừng -> CancelledException.
+        // Không dùng Thread.Abort: luồng bị bỏ lại là luồng nền, tự kết thúc sau; công cụ gõ phím kiểm tra cờ huỷ nên dừng sớm.
+        // Thời gian chờ người dùng xác nhận (BeginPause/EndPause) không tính vào hạn.
+        internal static ToolOutcome RunTimed(string name, Dictionary<string, object> args, ToolContext ctx, CommandContext cmd)
+        {
+            if (cmd == null) return Run(name, args, ctx);
+            cmd.ThrowIfCancelled();
+            int limit = Timeouts.ForTool(name);
+            ToolOutcome result = null;
+            Exception failure = null;
+            ManualResetEvent done = new ManualResetEvent(false);
+            Thread worker = new Thread(delegate()
+            {
+                InputControl.Stop = cmd;
+                try { result = Run(name, args, ctx); }
+                catch (Exception error) { failure = error; }
+                finally
+                {
+                    try { done.Set(); }
+                    catch (ObjectDisposedException) { /* người chờ đã bỏ đi */ }
+                }
+            });
+            worker.SetApartmentState(ApartmentState.STA);
+            worker.IsBackground = true;
+            worker.Name = "Capri tool " + name;
+            Stopwatch watch = Stopwatch.StartNew();
+            long pausedAtStart = cmd.PausedNowMs();
+            worker.Start();
+            while (true)
+            {
+                long elapsed = watch.ElapsedMilliseconds - (cmd.PausedNowMs() - pausedAtStart);
+                if (elapsed >= limit)
+                {
+                    Log.Add("ERROR", "Công cụ", name + " quá " + (limit / 1000) + " giây -> bỏ", null, cmd.Id);
+                    return ToolOutcome.Fail("timeout: công cụ '" + name + "' không xong sau " + (limit / 1000) + " giây.");
+                }
+                int slice = (int)Math.Min(250, limit - elapsed);
+                int which = WaitHandle.WaitAny(new WaitHandle[] { done, cmd.CancelHandle }, slice);
+                if (which == 0) break;
+                if (which == 1) throw new CancelledException(cmd.Reason);
+            }
+            if (failure is CancelledException) throw new CancelledException(failure.Message);
+            if (failure != null)
+            {
+                Log.Error("Công cụ", name + " lỗi bất ngờ", failure, cmd.Id);
+                return ToolOutcome.Fail("Lỗi: " + failure.GetType().Name + " " + failure.Message);
+            }
+            return result ?? ToolOutcome.Fail("Công cụ không trả kết quả.");
         }
 
         internal static ToolOutcome Run(string name, Dictionary<string, object> args, ToolContext ctx)
@@ -112,7 +175,9 @@ namespace CapriHost.Actions
                 switch (name)
                 {
                     case "open_website": return OpenWebsite(Json.Str(args, "url", ""));
-                    case "play_youtube": return YouTube.Play(Json.Str(args, "query", ""), Json.Str(args, "browser", ""), true);
+                    case "play_youtube": return YouTube.Play(Json.Str(args, "query", ""), Json.Str(args, "browser", ""), true, ctx == null ? null : ctx.Cmd);
+                    case "window_control": return WindowControl.Run(Json.Str(args, "action", ""), Json.Str(args, "target", ""));
+                    case "set_default_browser": return DefaultBrowser.SetChrome(ctx);
                     case "open_app": return AppLauncher.Launch(Json.Str(args, "name", ""), Json.Str(args, "args", ""));
                     case "close_app": return AppLauncher.Close(Json.Str(args, "name", ""), Json.Bool(args, "force", false), ctx);
                     case "list_windows": return ToolOutcome.Success(AppLauncher.ListWindows());
@@ -121,7 +186,7 @@ namespace CapriHost.Actions
                     {
                         string what = Json.Str(args, "what", "temp");
                         if (!Allowed(ctx, "Dọn dẹp máy (" + what + ")? File tạm và thùng rác sẽ bị xoá.")) return ToolOutcome.Fail("Người dùng không cho phép dọn dẹp.");
-                        return Cleaner.Run(what);
+                        return Cleaner.Run(what, ctx == null ? null : ctx.Cmd);
                     }
                     case "press_keys":
                     {
@@ -168,7 +233,7 @@ namespace CapriHost.Actions
                     case "look_at_screen":
                     {
                         byte[] jpeg = ScreenTools.Capture(1024, 60);
-                        string seen = Agent.Gemini.Describe(jpeg, Json.Str(args, "question", "Describe what is on the screen."));
+                        string seen = Agent.Gemini.Describe(jpeg, Json.Str(args, "question", "Describe what is on the screen."), ctx == null ? null : ctx.Cmd);
                         return ToolOutcome.Success(seen);
                     }
                     case "media":
@@ -185,12 +250,17 @@ namespace CapriHost.Actions
                 }
                 return ToolOutcome.Fail("Không có công cụ tên '" + name + "'.");
             }
+            catch (CancelledException) { throw; }       // bị Dừng / hết giờ: để lớp trên xử lý, không nuốt
             catch (AiException error) { return ToolOutcome.Fail(error.Message); }
-            catch (Win32Exception error) { return ToolOutcome.Fail("Windows báo lỗi: " + error.Message); }
+            catch (Win32Exception error)
+            {
+                Log.Error("Công cụ", name + " - Windows báo lỗi", error, ctx == null || ctx.Cmd == null ? null : ctx.Cmd.Id);
+                return ToolOutcome.Fail("Windows báo lỗi: " + error.Message);
+            }
             catch (Exception error)
             {
-                Log.Error("Công cụ " + name + " lỗi", error);
-                return ToolOutcome.Fail("Lỗi: " + error.Message);
+                Log.Error("Công cụ", name + " lỗi", error, ctx == null || ctx.Cmd == null ? null : ctx.Cmd.Id);
+                return ToolOutcome.Fail("Lỗi: " + error.GetType().Name + " " + error.Message);
             }
         }
 
@@ -218,10 +288,9 @@ namespace CapriHost.Actions
             Uri uri;
             if (!Uri.TryCreate(url, UriKind.Absolute, out uri) || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
                 return ToolOutcome.Fail("Chỉ mở được địa chỉ http hoặc https.");
-            ProcessStartInfo info = new ProcessStartInfo(uri.AbsoluteUri);
-            info.UseShellExecute = true;
-            Process.Start(info);
-            return ToolOutcome.Success("Đã mở " + uri.Host + ".");
+            ToolOutcome opened = BrowserLauncher.Open(uri.AbsoluteUri, "");
+            if (!opened.Ok) return opened;
+            return ToolOutcome.Success("Đã mở " + uri.Host + ". " + opened.Text);
         }
     }
 }

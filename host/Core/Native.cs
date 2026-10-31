@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
 
+
 namespace CapriHost.Core
 {
     // Chỉ các hàm Win32 có sẵn từ Windows 7 (hoặc cũ hơn). Không dùng API Win8.1/10.
@@ -66,8 +67,27 @@ namespace CapriHost.Core
                 using (System.Diagnostics.Process self = System.Diagnostics.Process.GetCurrentProcess())
                     SetProcessWorkingSetSize(self.Handle, (IntPtr)(-1), (IntPtr)(-1));
             }
-            catch (Exception) { }
+            catch (Exception error) { Log.Warn("Host", "Không thu gọn được RAM: " + error.Message, null); }
         }
+
+        // ---- Cửa sổ (Windows 7 có đủ các hàm này)
+        internal delegate bool EnumWindowsProc(IntPtr window, IntPtr param);
+        internal const int SW_MAXIMIZE = 3;
+        internal const int SW_MINIMIZE = 6;
+        internal const int SW_RESTORE = 9;
+        internal const int SW_SHOW = 5;
+
+        [DllImport("user32.dll")] internal static extern bool EnumWindows(EnumWindowsProc callback, IntPtr param);
+        [DllImport("user32.dll")] internal static extern bool IsWindowVisible(IntPtr window);
+        [DllImport("user32.dll")] internal static extern bool IsIconic(IntPtr window);
+        [DllImport("user32.dll")] internal static extern bool IsZoomed(IntPtr window);
+        [DllImport("user32.dll")] internal static extern bool ShowWindow(IntPtr window, int command);
+        [DllImport("user32.dll")] internal static extern bool SetForegroundWindow(IntPtr window);
+        [DllImport("user32.dll")] internal static extern bool BringWindowToTop(IntPtr window);
+        [DllImport("user32.dll")] internal static extern int GetWindowTextLength(IntPtr window);
+        [DllImport("user32.dll")] internal static extern bool AttachThreadInput(uint from, uint to, bool attach);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern int GetClassName(IntPtr window, System.Text.StringBuilder text, int max);
+        [DllImport("kernel32.dll")] internal static extern uint GetCurrentThreadId();
 
         [DllImport("gdi32.dll")] internal static extern IntPtr CreateCompatibleDC(IntPtr dc);
         [DllImport("gdi32.dll")] internal static extern IntPtr SelectObject(IntPtr dc, IntPtr gdiObject);

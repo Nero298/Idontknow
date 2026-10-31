@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
 using CapriHost.Ai;
+using CapriHost.Core;
 
 namespace CapriHost.Actions
 {
@@ -10,7 +11,7 @@ namespace CapriHost.Actions
     // nếu YouTube đổi định dạng trang thì tự rơi về mở trang kết quả tìm kiếm.
     internal static class YouTube
     {
-        internal static ToolOutcome Play(string query, string browser, bool openFirst)
+        internal static ToolOutcome Play(string query, string browser, bool openFirst, CommandContext cmd)
         {
             query = (query ?? "").Trim();
             if (query.Length == 0) return ToolOutcome.Fail("Chưa nói tìm bài gì trên YouTube.");
@@ -23,9 +24,9 @@ namespace CapriHost.Actions
                 try
                 {
                     Dictionary<string, string> headers = new Dictionary<string, string>();
-                    headers["User-Agent"] = "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0 Safari/537.36";
+                    headers["User-Agent"] = BrowserLauncher.ChromeUserAgent;
                     headers["Accept-Language"] = "en-US,en;q=0.9";
-                    string html = Http.Text("GET", results, null, headers, 9000);
+                    string html = Http.Text("GET", results, null, headers, Timeouts.HttpYouTubeMs, cmd);
                     Match first = Regex.Match(html, "\"videoId\":\"([A-Za-z0-9_-]{11})\"");
                     if (first.Success)
                     {
@@ -33,31 +34,20 @@ namespace CapriHost.Actions
                         direct = true;
                     }
                 }
-                catch (AiException) { }       // không tải được trang tìm kiếm: mở trang kết quả
+                catch (AiException error)
+                {
+                    // Không tải được trang tìm kiếm: vẫn mở trang kết quả, nhưng ghi lại lý do.
+                    Log.Warn("Công cụ", "YouTube: không lấy được video đầu tiên (" + error.Message + ") -> mở trang kết quả", cmd == null ? null : cmd.Id);
+                }
             }
 
-            ToolOutcome opened = (browser ?? "").Trim().Length > 0 && !string.Equals(browser, "default", StringComparison.OrdinalIgnoreCase)
-                ? AppLauncher.Launch(browser, target)
-                : OpenDefault(target);
+            ToolOutcome opened = BrowserLauncher.Open(target, browser);
             if (!opened.Ok) return opened;
-            return ToolOutcome.Success(direct
+            string said = direct
                 ? "Đã mở bài đầu tiên tìm được cho \"" + query + "\" trên YouTube."
-                : "Đã mở kết quả tìm kiếm \"" + query + "\" trên YouTube.");
-        }
-
-        private static ToolOutcome OpenDefault(string url)
-        {
-            try
-            {
-                System.Diagnostics.ProcessStartInfo info = new System.Diagnostics.ProcessStartInfo(url);
-                info.UseShellExecute = true;
-                System.Diagnostics.Process.Start(info);
-                return ToolOutcome.Success("ok");
-            }
-            catch (System.ComponentModel.Win32Exception error)
-            {
-                return ToolOutcome.Fail("Không mở được trình duyệt: " + error.Message);
-            }
+                : "Đã mở kết quả tìm kiếm \"" + query + "\" trên YouTube.";
+            // Giữ nguyên cảnh báo (vd. "Không tìm thấy Chrome...") để điện thoại thấy.
+            return ToolOutcome.Success(said + " " + opened.Text);
         }
     }
 }

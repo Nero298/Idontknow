@@ -10,10 +10,10 @@ using CapriHost.Network;
 
 namespace CapriHost.Ui
 {
-    // Vỏ của ứng dụng: biểu tượng khay hệ thống, pet, máy chủ LAN. Không có cửa sổ chính, chạy nền.
+    // Vỏ của ứng dụng: cửa sổ chính, biểu tượng khay hệ thống, pet, máy chủ LAN.
+    // Mở bằng tay: hiện cửa sổ chính. Mở do khởi động cùng Windows (--autostart): chạy êm ở khay.
     internal sealed class TrayApp : ApplicationContext
     {
-        private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
         private readonly NotifyIcon tray = new NotifyIcon();
         private readonly ContextMenuStrip menu = new ContextMenuStrip();
         private readonly Hub hub = new Hub();
@@ -25,11 +25,20 @@ namespace CapriHost.Ui
         private readonly ToolStripMenuItem addressItem = new ToolStripMenuItem();
         private readonly ToolStripMenuItem togglePet = new ToolStripMenuItem();
         private readonly ToolStripMenuItem autostart = new ToolStripMenuItem();
+        private readonly MainForm main;
+        private readonly bool startHidden;
+        private readonly bool firstRun;
+        private readonly System.Threading.EventWaitHandle showSignal;
+        private System.Threading.RegisteredWaitHandle showWait;
+        private bool hintShown;
         private readonly Control sync = new Control();     // chỉ để chuyển việc về luồng giao diện
         private PairForm pairForm;
 
-        internal TrayApp()
+        internal TrayApp(bool startHidden, bool firstRun, System.Threading.EventWaitHandle showSignal)
         {
+            this.startHidden = startHidden;
+            this.firstRun = firstRun;
+            this.showSignal = showSignal;
             IntPtr forceHandle = sync.Handle;
             Settings settings = Settings.Current;
             server = new CapriServer(settings.Port);
@@ -39,12 +48,16 @@ namespace CapriHost.Ui
             tray.Icon = LoadIcon();
             tray.Text = "Capri Host";
             tray.ContextMenuStrip = menu;
-            tray.DoubleClick += delegate { chat.Open(); };
+            tray.DoubleClick += delegate { ShowMain(); };
             tray.Visible = true;
 
             pet = new PetForm(menu);
             chat = new ChatBox(hub);
             pet.OpenChat += delegate { chat.Open(); };
+
+            main = new MainForm(hub, server, delegate { chat.Open(); }, ShowPairing, Quit);
+            main.HiddenToTray += OnMainHidden;
+            main.PetChanged += delegate { OnUi(ApplyPetVisibility); };
 
             hub.Server = server;
             hub.Said += delegate(string text) { OnUi(delegate { if (Settings.Current.PetVisible) pet.Say(text); }); };
@@ -58,16 +71,19 @@ namespace CapriHost.Ui
                 hub.OnConnected(s);
                 OnUi(delegate { UpdateStatus(); tray.ShowBalloonTip(2500, "Capri", s.DeviceName + " đã kết nối", ToolTipIcon.Info); });
             };
-            server.Disconnected += delegate { OnUi(UpdateStatus); };
+            server.Disconnected += delegate(ClientSession s) { hub.OnDisconnected(s); OnUi(UpdateStatus); };
             Pairing.Changed += delegate { OnUi(UpdateStatus); };
 
             if (!server.Start())
             {
-                MessageBox.Show(
-                    "Cổng " + settings.Port + " đang bị chương trình khác dùng nên Capri không nhận được kết nối từ điện thoại.\nĐóng chương trình để khởi động lại và thử lại.",
-                    "Capri Host",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Warning);
+                Log.Error("Mạng", "Cổng " + settings.Port + " đang bị chương trình khác dùng: không nhận được kết nối từ điện thoại", null, null);
+                if (!startHidden)
+                    MessageBox.Show(
+                        "Cổng " + settings.Port + " đang bị chương trình khác dùng nên Capri không nhận được kết nối từ điện thoại.\nĐóng chương trình đó rồi mở lại Capri.",
+                        "Capri Host",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                else tray.ShowBalloonTip(5000, "Capri", "Cổng " + settings.Port + " đang bị chiếm, điện thoại chưa kết nối được.", ToolTipIcon.Warning);
             }
             discovery.Start();
 
@@ -76,7 +92,26 @@ namespace CapriHost.Ui
             housekeeping.Tick += delegate { Native.TrimMemory(); };
             housekeeping.Start();
 
+            // Lần mở thứ hai của CapriHost.exe sẽ gõ cửa ở đây để đưa cửa sổ chính lên.
+            showWait = System.Threading.ThreadPool.RegisterWaitForSingleObject(showSignal, delegate(object state, bool timedOut)
+            {
+                if (!timedOut) OnUi(ShowMain);
+            }, null, System.Threading.Timeout.Infinite, false);
+
             Application.Idle += FirstIdle;
+        }
+
+        private void ShowMain()
+        {
+            main.BringUp();
+        }
+
+        // Lần đầu thu xuống khay: nhắc người dùng Capri vẫn đang chạy.
+        private void OnMainHidden()
+        {
+            if (hintShown) return;
+            hintShown = true;
+            tray.ShowBalloonTip(3500, "Capri vẫn đang chạy", "Bấm đúp biểu tượng ở khay hệ thống để mở lại. Chuột phải để thoát.", ToolTipIcon.Info);
         }
 
         // Chạy một lần khi vòng lặp thông điệp đã sẵn sàng.
@@ -85,7 +120,12 @@ namespace CapriHost.Ui
             Application.Idle -= FirstIdle;
             ApplyPetVisibility();
             UpdateStatus();
-            if (Settings.Current.Devices.Count == 0) ShowPairing();
+            if (!startHidden)
+            {
+                ShowMain();
+                if (Settings.Current.Devices.Count == 0) ShowPairing();
+            }
+            else Log.Info("Khởi động", "Chạy êm ở khay hệ thống (tự khởi động cùng Windows)", null);
             Timer greet = new Timer();
             greet.Interval = 1200;
             greet.Tick += delegate { greet.Stop(); greet.Dispose(); hub.GreetLocal(); Native.TrimMemory(); };
@@ -96,6 +136,12 @@ namespace CapriHost.Ui
 
         private void BuildMenu()
         {
+            ToolStripMenuItem open = new ToolStripMenuItem("Mở cửa sổ Capri");
+            open.Click += delegate { ShowMain(); };
+
+            ToolStripMenuItem stopAll = new ToolStripMenuItem("Dừng mọi lệnh");
+            stopAll.Click += delegate { hub.CancelAll("Bạn bấm Dừng ở khay hệ thống"); };
+
             ToolStripMenuItem talk = new ToolStripMenuItem("Nói chuyện với Capri...");
             talk.Click += delegate { chat.Open(); };
 
@@ -113,7 +159,7 @@ namespace CapriHost.Ui
 
             autostart.CheckOnClick = false;
             autostart.Text = "Khởi động cùng Windows";
-            autostart.Click += delegate { SetAutostart(!IsAutostart()); };
+            autostart.Click += delegate { Autostart.Set(!Autostart.IsOn()); UpdateStatus(); };
 
             ToolStripMenuItem forget = new ToolStripMenuItem("Xoá tất cả điện thoại đã ghép");
             forget.Click += delegate
@@ -133,7 +179,9 @@ namespace CapriHost.Ui
             ToolStripMenuItem quit = new ToolStripMenuItem("Thoát");
             quit.Click += delegate { Quit(); };
 
+            menu.Items.Add(open);
             menu.Items.Add(talk);
+            menu.Items.Add(stopAll);
             menu.Items.Add(pair);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(addressItem);
@@ -153,7 +201,7 @@ namespace CapriHost.Ui
             string first = ips.Count > 0 ? ips[0] : "?";
             addressItem.Text = "Địa chỉ: " + first + ":" + Settings.Current.Port + "  (" + server.ClientCount + " điện thoại)";
             togglePet.Text = Settings.Current.PetVisible ? "Ẩn Capri" : "Hiện Capri";
-            autostart.Checked = IsAutostart();
+            autostart.Checked = Autostart.IsOn();
             string tip = "Capri Host - " + server.ClientCount + " điện thoại";
             tray.Text = tip.Length > 63 ? tip.Substring(0, 63) : tip;
         }
@@ -184,8 +232,8 @@ namespace CapriHost.Ui
         private void OnUi(Action action)
         {
             try { sync.BeginInvoke(action); }
-            catch (ObjectDisposedException) { }
-            catch (InvalidOperationException) { }
+            catch (ObjectDisposedException) { /* ứng dụng đang tắt */ }
+            catch (InvalidOperationException) { /* chưa có cửa sổ để chuyển việc: bỏ qua */ }
         }
 
         // Hỏi xác nhận bằng hộp thoại trên PC (gọi từ luồng nền nên phải Invoke).
@@ -199,7 +247,7 @@ namespace CapriHost.Ui
                     answer = MessageBox.Show(question, "Capri hỏi", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) == DialogResult.Yes;
                 }));
             }
-            catch (InvalidOperationException) { }
+            catch (InvalidOperationException error) { Log.Warn("Giao diện", "Không hiện được hộp xác nhận: " + error.Message, null); }
             return answer;
         }
 
@@ -210,49 +258,28 @@ namespace CapriHost.Ui
                 using (Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("Capri.Chip.ico"))
                     if (stream != null) return new Icon(stream, 16, 16);
             }
-            catch (Exception) { }
+            catch (ArgumentException error) { Log.Warn("Giao diện", "Không nạp được biểu tượng: " + error.Message, null); }
+            catch (IOException error) { Log.Warn("Giao diện", "Không nạp được biểu tượng: " + error.Message, null); }
             return SystemIcons.Application;
-        }
-
-        private static string ExePath { get { return Application.ExecutablePath; } }
-
-        private static bool IsAutostart()
-        {
-            try
-            {
-                using (Microsoft.Win32.RegistryKey key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKey))
-                    return key != null && key.GetValue("CapriHost") != null;
-            }
-            catch (Exception) { return false; }
-        }
-
-        private static void SetAutostart(bool on)
-        {
-            try
-            {
-                using (Microsoft.Win32.RegistryKey key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(RunKey))
-                {
-                    if (on) key.SetValue("CapriHost", "\"" + ExePath + "\"");
-                    else key.DeleteValue("CapriHost", false);
-                }
-            }
-            catch (Exception error) { Log.Error("Không đổi được khởi động cùng Windows", error); }
         }
 
         private static void OpenFolder()
         {
             try { Process.Start("explorer.exe", "\"" + Settings.DataDir + "\""); }
-            catch (Exception) { }
+            catch (System.ComponentModel.Win32Exception error) { Log.Warn("Giao diện", "Không mở được thư mục dữ liệu: " + error.Message, null); }
         }
 
         private void Quit()
         {
+            hub.CancelAll("Capri thoát");
+            if (showWait != null) showWait.Unregister(null);
             housekeeping.Stop();
             discovery.Stop();
             server.Stop();
             tray.Visible = false;
             tray.Dispose();
             pet.Close();
+            main.Dispose();
             ExitThread();
         }
     }

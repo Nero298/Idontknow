@@ -19,6 +19,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.ArrowDownward
+import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.Button
@@ -41,6 +43,8 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -51,6 +55,17 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import app.capri.remote.net.ConnState
 import org.json.JSONObject
+
+private class ProviderInfo(val name: String, val label: String, val keyField: String?, val modelField: String?)
+
+private val Providers = listOf(
+    ProviderInfo("gemini", "Gemini", "gemini_key", "gemini_model"),
+    ProviderInfo("cloudflare", "Cloudflare Worker", null, null),
+    ProviderInfo("groq", "Groq", "groq_key", "groq_model"),
+    ProviderInfo("literouter", "LiteRouter (DeepSeek)", "literouter_key", "literouter_model"),
+    ProviderInfo("openrouter", "OpenRouter", "openrouter_key", "openrouter_model"),
+    ProviderInfo("nvidia", "NVIDIA", "nvidia_key", "nvidia_model")
+)
 
 @Composable
 private fun fieldColors() = OutlinedTextFieldDefaults.colors(
@@ -185,12 +200,19 @@ fun SettingsScreen(vm: AppViewModel, state: UiState) {
 @Composable
 private fun HostSettings(vm: AppViewModel, state: UiState, s: JSONObject) {
     // Trạng thái chỉnh sửa; khởi tạo lại mỗi khi Host gửi cài đặt mới (đối tượng s đổi).
-    var geminiKey by remember(s) { mutableStateOf("") }
-    var nvidiaKey by remember(s) { mutableStateOf("") }
-    var geminiModel by remember(s) { mutableStateOf(s.optString("gemini_model")) }
-    var nvidiaModel by remember(s) { mutableStateOf(s.optString("nvidia_model")) }
-    var primary by remember(s) { mutableStateOf(s.optString("primary", "gemini")) }
+    // ---- Nhà cung cấp AI: thứ tự ưu tiên do người dùng tự sắp xếp, mỗi nhà có công tắc bật/tắt.
+    val order = remember(s) { mutableStateListOf<String>().also { list -> list.addAll(s.optString("provider_order").split(",").map { it.trim() }.filter { it.isNotEmpty() }) } }
+    val off = remember(s) { mutableStateListOf<String>().also { list -> list.addAll(s.optString("provider_off").split(",").map { it.trim() }.filter { it.isNotEmpty() }) } }
+    val keys = remember(s) { mutableStateMapOf<String, String>() }          // khóa mới gõ (chỉ gửi nếu không rỗng)
+    val models = remember(s) {
+        mutableStateMapOf<String, String>().also { m -> for (p in Providers) if (p.modelField != null) m[p.name] = s.optString(p.modelField) }
+    }
+    var cloudflareOn by remember(s) { mutableStateOf(s.optBoolean("cloudflare_on", true)) }
+    var cloudflareUrl by remember(s) { mutableStateOf(s.optString("cloudflare_url")) }
     var failover by remember(s) { mutableStateOf(s.optBoolean("failover", true)) }
+    var saveQuota by remember(s) { mutableStateOf(s.optBoolean("save_quota", true)) }
+    var browser by remember(s) { mutableStateOf(s.optString("browser", "chrome")) }
+    var bypassProxy by remember(s) { mutableStateOf(s.optBoolean("bypass_proxy", true)) }
     var language by remember(s) { mutableStateOf(s.optString("language", "Vietnamese")) }
     var nickname by remember(s) { mutableStateOf(s.optString("nickname")) }
     var wordiness by remember(s) { mutableStateOf(s.optInt("wordiness", 0)) }
@@ -199,26 +221,73 @@ private fun HostSettings(vm: AppViewModel, state: UiState, s: JSONObject) {
     var greet by remember(s) { mutableStateOf(s.optBoolean("greet", true)) }
     var customApps by remember(s) { mutableStateOf(s.optString("custom_apps")) }
 
-    Section("Gemini (AI chính)") {
-        SecretField(
-            "Khóa API Gemini", s.optBoolean("gemini_key_set"), s.optString("gemini_key_hint"), geminiKey, { geminiKey = it },
-            onClear = { vm.saveSettings(JSONObject().put("gemini_key", "")) }
+    Section("Thứ tự dùng AI") {
+        Text(
+            "Capri thử từ trên xuống dưới. Nhà nào hết lượt (ví dụ Gemini miễn phí chỉ ~20 lượt/ngày) hoặc lỗi thì tự chuyển sang nhà kế tiếp, " +
+                "và thử lại nhà đó sau một lúc. Dùng nút mũi tên để đổi thứ tự, công tắc để bật/tắt.",
+            style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        ModelPicker(geminiModel, { geminiModel = it }, state.geminiModels, { vm.fetchModels("gemini", geminiKey) }, state.modelsNote)
+        order.forEachIndexed { index, name ->
+            val info = Providers.firstOrNull { it.name == name } ?: return@forEachIndexed
+            val configured = if (info.keyField == null) cloudflareOn else (s.optBoolean(info.keyField + "_set") || !keys[name].isNullOrBlank())
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("${index + 1}.", Modifier.width(26.dp), style = MaterialTheme.typography.titleMedium)
+                Column(Modifier.weight(1f)) {
+                    Text(info.label, style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        if (name in off) "đang tắt" else if (!configured) (if (info.keyField == null) "chưa bật" else "chưa có khóa") else "sẵn sàng",
+                        style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                IconButton(enabled = index > 0, onClick = { order.removeAt(index); order.add(index - 1, name) }) { Icon(Icons.Outlined.ArrowUpward, "Lên") }
+                IconButton(enabled = index < order.lastIndex, onClick = { order.removeAt(index); order.add(index + 1, name) }) { Icon(Icons.Outlined.ArrowDownward, "Xuống") }
+                Switch(checked = name !in off, onCheckedChange = { on -> if (on) off.remove(name) else if (name !in off) off.add(name) })
+            }
+        }
+        SwitchRow("Tự chuyển nhà cung cấp khi lỗi", "Tắt thì chỉ dùng nhà đứng đầu danh sách.", failover) { failover = it }
+        SwitchRow("Tiết kiệm lượt AI", "Làm xong việc là kết thúc, không gọi AI lần hai chỉ để nói \"xong rồi\".", saveQuota) { saveQuota = it }
     }
 
-    Section("NVIDIA (dự phòng)") {
-        SecretField(
-            "Khóa API NVIDIA (nvapi-…)", s.optBoolean("nvidia_key_set"), s.optString("nvidia_key_hint"), nvidiaKey, { nvidiaKey = it },
-            onClear = { vm.saveSettings(JSONObject().put("nvidia_key", "")) }
-        )
-        ModelPicker(nvidiaModel, { nvidiaModel = it }, state.nvidiaModels, { vm.fetchModels("nvidia", nvidiaKey) }, null)
-        Text("Nhà cung cấp ưu tiên", style = MaterialTheme.typography.titleMedium)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(selected = primary == "gemini", onClick = { primary = "gemini" }, label = { Text("Gemini trước") })
-            FilterChip(selected = primary == "nvidia", onClick = { primary = "nvidia" }, label = { Text("NVIDIA trước") })
+    for (info in Providers) {
+        if (info.keyField == null) {
+            Section(info.label + " (không cần khóa)") {
+                SwitchRow("Dùng Cloudflare Worker", "Hiểu lệnh điều khiển máy (mở app, web, âm lượng...), không trò chuyện được. ~1.000 lệnh/ngày, reset 07:00 sáng.", cloudflareOn) { cloudflareOn = it }
+                OutlinedTextField(value = cloudflareUrl, onValueChange = { cloudflareUrl = it }, singleLine = true, label = { Text("Địa chỉ Worker") }, colors = fieldColors(), modifier = Modifier.fillMaxWidth())
+            }
+        } else {
+            Section(info.label) {
+                SecretField(
+                    "Khóa API " + info.label, s.optBoolean(info.keyField + "_set"), s.optString(info.keyField + "_hint"),
+                    keys[info.name] ?: "", { keys[info.name] = it },
+                    onClear = { vm.saveSettings(JSONObject().put(info.keyField, "")) }
+                )
+                ModelPicker(
+                    models[info.name] ?: "", { models[info.name] = it }, state.models[info.name] ?: emptyList(),
+                    { vm.fetchModels(info.name, keys[info.name] ?: "") }, state.modelsNote
+                )
+            }
         }
-        SwitchRow("Tự chuyển nhà cung cấp khi lỗi", "Gemini lỗi hoặc hết hạn mức thì thử NVIDIA (và ngược lại).", failover) { failover = it }
+    }
+
+    Section("Trình duyệt") {
+        Text("Capri mở web và YouTube bằng trình duyệt này. Không tìm thấy thì báo rõ, không âm thầm mở Internet Explorer.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        val isCustom = browser !in listOf("chrome", "firefox", "default")
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = browser == "chrome", onClick = { browser = "chrome" }, label = { Text("Chrome") })
+            FilterChip(selected = browser == "firefox", onClick = { browser = "firefox" }, label = { Text("Firefox") })
+            FilterChip(selected = browser == "default", onClick = { browser = "default" }, label = { Text("Mặc định Windows") })
+            FilterChip(selected = isCustom, onClick = { if (!isCustom) browser = "C:\\Program Files\\..." }, label = { Text("Tự chọn") })
+        }
+        if (isCustom) {
+            OutlinedTextField(
+                value = browser, onValueChange = { browser = it }, singleLine = true, label = { Text("Đường dẫn trình duyệt (.exe)") },
+                colors = fieldColors(), modifier = Modifier.fillMaxWidth()
+            )
+        }
+        OutlinedButton(onClick = { vm.quick("Đặt Chrome làm trình duyệt mặc định", "set_default_browser", JSONObject().put("browser", "chrome")); vm.go(Screen.Chat) }) {
+            Text("Đặt Chrome làm trình duyệt mặc định")
+        }
+        SwitchRow("Bỏ qua proxy khi gọi AI", "Nhanh hơn trên Windows 7. Tắt nếu máy bạn bắt buộc đi qua proxy.", bypassProxy) { bypassProxy = it }
     }
 
     Section("Tính cách Capri") {
@@ -251,13 +320,18 @@ private fun HostSettings(vm: AppViewModel, state: UiState, s: JSONObject) {
     Button(
         onClick = {
             val values = JSONObject()
-                .put("gemini_model", geminiModel).put("nvidia_model", nvidiaModel)
-                .put("primary", primary).put("failover", failover)
+                .put("provider_order", order.joinToString(",")).put("provider_off", off.joinToString(","))
+                .put("failover", failover).put("save_quota", saveQuota)
+                .put("cloudflare_on", cloudflareOn).put("cloudflare_url", cloudflareUrl)
+                .put("browser", browser).put("bypass_proxy", bypassProxy)
                 .put("language", language).put("nickname", nickname).put("wordiness", wordiness).put("personality", personality)
                 .put("greet", greet).put("allow_input", allowInput).put("custom_apps", customApps)
-            // Khóa chỉ gửi khi người dùng vừa nhập khóa mới.
-            if (geminiKey.isNotBlank()) values.put("gemini_key", geminiKey.trim())
-            if (nvidiaKey.isNotBlank()) values.put("nvidia_key", nvidiaKey.trim())
+            for (p in Providers) {
+                if (p.modelField != null) values.put(p.modelField, models[p.name] ?: "")
+                // Khóa chỉ gửi khi người dùng vừa nhập khóa mới.
+                val typed = keys[p.name]
+                if (p.keyField != null && !typed.isNullOrBlank()) values.put(p.keyField, typed.trim())
+            }
             vm.saveSettings(values)
         },
         modifier = Modifier.fillMaxWidth().height(50.dp)

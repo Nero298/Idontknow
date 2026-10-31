@@ -30,10 +30,12 @@ namespace CapriHost.Ai
             if (error.Status == 400 && detail.IndexOf("API key", StringComparison.OrdinalIgnoreCase) >= 0) message = "Khóa Gemini không hợp lệ. Kiểm tra lại trong Cài đặt.";
             else if (error.Status == 401 || error.Status == 403) message = "Gemini từ chối khóa API (" + error.Status + "). Kiểm tra khóa hoặc quyền truy cập.";
             else if (error.Status == 404) message = "Không tìm thấy mô hình Gemini '" + Settings.Current.GeminiModel + "'. Chọn mô hình khác trong Cài đặt.";
-            else if (error.Status == 429) message = "Gemini đang giới hạn tốc độ hoặc hết hạn mức miễn phí. Thử lại sau ít phút.";
+            else if (error.Status == 429) message = "Gemini hết hạn mức (gói miễn phí chỉ có khoảng 20 lượt mỗi ngày) hoặc đang giới hạn tốc độ. " + detail;
             else if (error.Status >= 500) message = "Máy chủ Gemini đang lỗi (" + error.Status + "). Thử lại sau.";
             else message = "Gemini báo lỗi " + error.Status + ": " + detail;
-            return new AiException(message, error.Status, error.Body);
+            AiException result = new AiException(message, error.Status, error.Body);
+            result.RetryAfterSec = error.RetryAfterSec;
+            return result;
         }
 
         private string Url(string model, string method)
@@ -41,7 +43,7 @@ namespace CapriHost.Ai
             return Base + "/models/" + Uri.EscapeDataString(model) + ":" + method;
         }
 
-        public AiTurn Complete(string system, List<ChatMsg> messages, List<ToolSpec> tools)
+        public AiTurn Complete(string system, List<ChatMsg> messages, List<ToolSpec> tools, CommandContext cmd)
         {
             List<object> contents = new List<object>();
             List<object> pendingResponses = new List<object>();
@@ -97,7 +99,7 @@ namespace CapriHost.Ai
             }
 
             string text;
-            try { text = Http.Text("POST", Url(Settings.Current.GeminiModel, "generateContent"), Json.Write(body), Headers(Settings.Current.GeminiKey), 60000); }
+            try { text = Http.Text("POST", Url(Settings.Current.GeminiModel, "generateContent"), Json.Write(body), Headers(Settings.Current.GeminiKey), Timeouts.HttpMs, cmd); }
             catch (AiException error) { throw Friendly(error); }
             return Parse(text);
         }
@@ -147,7 +149,7 @@ namespace CapriHost.Ai
         }
 
         // Nghe giọng nói: gửi WAV cho Gemini để lấy văn bản. Hoạt động với mọi ngôn ngữ.
-        internal string Transcribe(byte[] wav, string mime)
+        internal string Transcribe(byte[] wav, string mime, CommandContext cmd)
         {
             if (!Configured) throw new AiException("Cần khóa Gemini để nhận lệnh bằng giọng nói. Nhập khóa trong Cài đặt.", 0, "");
             Dictionary<string, object> body = Json.D(
@@ -159,13 +161,13 @@ namespace CapriHost.Ai
                 },
                 "generationConfig", Json.D("temperature", 0.0, "maxOutputTokens", 1024));
             string text;
-            try { text = Http.Text("POST", Url(Settings.Current.GeminiModel, "generateContent"), Json.Write(body), Headers(Settings.Current.GeminiKey), 60000); }
+            try { text = Http.Text("POST", Url(Settings.Current.GeminiModel, "generateContent"), Json.Write(body), Headers(Settings.Current.GeminiKey), Timeouts.HttpMediaMs, cmd); }
             catch (AiException error) { throw Friendly(error); }
             return Parse(text).Text.Trim();
         }
 
         // Nhìn ảnh chụp màn hình và trả lời câu hỏi.
-        internal string Describe(byte[] jpeg, string question)
+        internal string Describe(byte[] jpeg, string question, CommandContext cmd)
         {
             if (!Configured) throw new AiException("Cần khóa Gemini để nhìn màn hình.", 0, "");
             Dictionary<string, object> body = Json.D(
@@ -177,7 +179,7 @@ namespace CapriHost.Ai
                 },
                 "generationConfig", Json.D("temperature", 0.3, "maxOutputTokens", 700));
             string text;
-            try { text = Http.Text("POST", Url(Settings.Current.GeminiModel, "generateContent"), Json.Write(body), Headers(Settings.Current.GeminiKey), 60000); }
+            try { text = Http.Text("POST", Url(Settings.Current.GeminiModel, "generateContent"), Json.Write(body), Headers(Settings.Current.GeminiKey), Timeouts.HttpMediaMs, cmd); }
             catch (AiException error) { throw Friendly(error); }
             return Parse(text).Text.Trim();
         }
@@ -185,7 +187,7 @@ namespace CapriHost.Ai
         // Danh sách mô hình hiện có (tên mô hình đổi thường xuyên nên luôn lấy từ API).
         public List<string> ListModels(string keyOverride)
         {
-            string key = string.IsNullOrEmpty(keyOverride) ? Settings.Current.GeminiKey : keyOverride;
+            string key = string.IsNullOrEmpty(keyOverride) ? Settings.Current.GeminiKey : Settings.CleanKey(keyOverride);
             if (key.Length == 0) throw new AiException("Chưa có khóa Gemini.", 0, "");
             List<string> found = new List<string>();
             string token = "";
@@ -193,7 +195,7 @@ namespace CapriHost.Ai
             {
                 string url = Base + "/models?pageSize=200" + (token.Length > 0 ? "&pageToken=" + Uri.EscapeDataString(token) : "");
                 string text;
-                try { text = Http.Text("GET", url, null, Headers(key), 20000); }
+                try { text = Http.Text("GET", url, null, Headers(key), Timeouts.HttpListModelsMs); }
                 catch (AiException error) { throw Friendly(error); }
                 Dictionary<string, object> root = Json.ReadObject(text);
                 foreach (object item in Json.Arr(root, "models"))
