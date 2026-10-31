@@ -186,8 +186,8 @@ namespace CapriHost.Ui
         {
             if (IsDisposed || !IsHandleCreated) return;
             try { BeginInvoke(new Action<LogEntry>(AppendEntry), entry); }
-            catch (InvalidOperationException) { /* cửa sổ đang đóng */ }
             catch (ObjectDisposedException) { /* cửa sổ đã đóng */ }
+            catch (InvalidOperationException) { /* cửa sổ đang đóng */ }
         }
 
         private void AppendEntry(LogEntry entry)
